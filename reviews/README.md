@@ -21,3 +21,11 @@ round without a SHA is invalid.
 | 4 | 2026-08-09/10 | Codex | AMEND | unversioned (pre-repo) |
 | 5 | 2026-08-10 | Codex | AMEND | unversioned (pre-repo) |
 | 6 | 2026-08-10 | Kimi | 6.7/10, R1–R8 | commit `9fe95d7` (first versioned review) |
+| 6a | 2026-08-10 | Codex | AMEND | PR #1 head `f976737` |
+| 6b | 2026-08-10 | Codex | AMEND | `ecf7ea8` |
+| 6c | 2026-08-10 | Codex | AMEND | `dbbe632` |
+| 6d | 2026-08-10 | Codex | AMEND | `f7aa39c` |
+| 6e | 2026-08-10 | Codex | AMEND | `35fd27d` |
+| 6f | 2026-08-10 | Codex | AMEND | `9f09505` |
+| 6g | 2026-08-10 | Codex | AMEND | `b0a4c4f` |
+| 6h | 2026-08-10 | **Claude (author)** | **self-review — NOT a gate** | `39bda50` |

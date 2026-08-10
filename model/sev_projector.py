@@ -132,7 +132,9 @@ def iri_run(core_digest, wid, ptr, reason_digest, semantics_digest):
     return "urn:sigma:run:" + sm.sha256_hex(
         core_digest.encode("ascii") + b"\x00" + wid.encode() + b"\x00"
         + ptr.encode() + b"\x00" + reason_digest.encode() + b"\x00"
-        + str(semantics_digest).encode("ascii"))
+        + (semantics_digest or "").encode("ascii"))
+    # absent semantics contributes an empty field, never the literal
+    # "None": digests are fixed-length, so "" is unambiguous
 
 
 def iri_verify_graph(core_digest):
@@ -313,10 +315,35 @@ def project(snapshot, receipt, cas) -> tuple:
     receipted = {core["subroot_descriptor_digest"]}
     unjudged = sorted(w["protocol"] for w in snapshot["subroots"]
                       if w["digest"] not in receipted)
-    loss_manifest = {"loss_manifest": "sev@v0", "entries": [
-        loss("L-SIG", "signature validity/binding are receipt-reported; "
-                      "re-verification needs envelope bytes"),
-        loss("L-SETTLE", "settlement/grade not re-derivable from the graph"),
+
+    # What this MVP does NOT emit. Declared machine-readably and only when
+    # the data actually exists, because a loss manifest that describes
+    # caveats on absent facts is worse than none: it reads as
+    # "present, with reservations" (self-review 2026-08-10).
+    has_sigs = any(s.get("signatures") for s in core["sources"]
+                   if s.get("kind") == "record")
+    has_settlement = any(s.get("settlement") for s in core["sources"]
+                         if s.get("kind") == "record")
+    has_unclaimed = bool(snapshot.get("unclaimed"))
+    absent = []
+    if has_sigs:
+        absent.append(loss("L-NOSIG", "the receipt carries signature results; "
+                                      "this MVP emits NO signature nodes at all"))
+    if has_settlement:
+        absent.append(loss("L-NOSETTLE", "the receipt carries jurisdiction-scoped "
+                                         "settlement; this MVP emits NO settlement "
+                                         "nodes at all"))
+    if has_unclaimed:
+        absent.append(loss("L-NOUNCLAIMED", "the snapshot pins unclaimed members; "
+                                            "they are not projected"))
+    absent.append(loss("L-NOMAP", "profile §4.1 record-body mapping is not "
+                                  "implemented: actor, under/Plan, subject, "
+                                  "evidence and prior are absent from the graph"))
+
+    loss_manifest = {"loss_manifest": "sev@v0", "entries": absent + [
+        loss("L-SIG", "signature validity/binding, WHERE PROJECTED, would be "
+                      "receipt-reported only; re-verification needs envelope bytes"),
+        loss("L-SETTLE", "settlement/grade are not re-derivable from the graph"),
         loss("L-REEXEC", "the graph records past re-executions; it cannot re-run"),
         loss("L-CANON", "canonical bytes are not recoverable from the graph"),
         loss("L-COMPLETE", "completeness is relative to the sealed snapshot"),
@@ -338,6 +365,14 @@ def project(snapshot, receipt, cas) -> tuple:
         "sources_projected": len(sources) - len(exclusions),
         "sources_excluded": len(exclusions),
         "exclusions": exclusions,
+        "coverage": {
+            "emitted": ["source", "record", "filing", "reason", "check-run",
+                        "verification-receipt"],
+            "not_emitted": ["signature", "settlement", "actor", "policy-plan",
+                            "subject", "evidence", "prior", "unclaimed"],
+            "note": "sources_projected counts sources admitted to the graph, "
+                    "NOT completeness of the profile mapping over them",
+        },
         "unverified_reasons": unverified,
         "graph_digest": sm.sha256_hex(nquads),
         "loss_manifest_digest": sm.sha256_hex(sm.jcs(loss_manifest)),
@@ -1021,6 +1056,61 @@ def run_vectors():
         sm.check_true("check resolving to %s -> refusal" % label,
                       lambda resK=resK, fK=fK: resK is None
                       and any(x["code"] == "CHECK_BLOB_ABSENT" for x in fK))
+
+    # self-review: what the receipt asserts and the graph omits must be
+    # DECLARED, not implied. A loss manifest that puts caveats on absent
+    # facts reads as "present, with reservations".
+    snapL, receiptL, casL = fixture()
+    receiptL["core"]["sources"][1]["signatures"] = [
+        {"sig_digest": "c" * 64, "multiplicity": 0, "actor": "alice@x",
+         "key": "d" * 64, "valid": True, "binding": "bound"}]
+    receiptL["core"]["sources"][1]["settlement"] = []
+    resL, fL = project(snapL, receiptL, casL)
+    codesL = [e["code"] for e in resL["loss_manifest"]["entries"]]
+    sm.check_true("a receipt-asserted signature is absent from the graph",
+                  lambda: fL == [] and b"alice@x" not in resL["nquads"])
+    sm.check_true("...and that absence is declared as L-NOSIG",
+                  lambda: "L-NOSIG" in codesL)
+    sm.check_true("the unimplemented body mapping is always declared",
+                  lambda: "L-NOMAP" in codesL)
+    sm.check_true("no absence code is emitted for data that is not there",
+                  lambda: "L-NOSETTLE" not in codesL
+                  and "L-NOUNCLAIMED" not in codesL)   # this fixture has neither
+    # ...but a snapshot that DOES pin unclaimed bytes must declare them
+    snapU, receiptU, casU = fixture()
+    dU = {k: v for k, v in snapU["subroots"][0].items() if k != "digest"}
+    note = b"loose note"
+    snapU2 = sm.snapshot_object([dU], [{"path": "notes.txt",
+                                        "sha256": sm.sha256_hex(note)}])
+    casU[sm.sha256_hex(note)] = note
+    receiptU["core"]["subroot_descriptor_digest"] = sm.subroot_descriptor_digest(dU)
+    resU, fU = project(snapU2, receiptU, casU)
+    sm.check_true("unclaimed snapshot members are declared when present",
+                  lambda: fU == [] and "L-NOUNCLAIMED" in
+                  [e["code"] for e in resU["loss_manifest"]["entries"]])
+    cov = resL["view_manifest"]["coverage"]
+    sm.check_true("coverage qualifies what 'projected' means",
+                  lambda: "signature" in cov["not_emitted"]
+                  and "record" in cov["emitted"])
+
+    # absent semantics must not stringify into the run's hash material
+    snapM, receiptM, casM = fixture()
+    srcM = receiptM["core"]["sources"][1]
+    srcM["reasons"][0]["outcome"].update(
+        re_execution="unverified", observed_verdict=None, observed_result=None,
+        atp_spent=None, failure_code="RUNTIME_UNAVAILABLE")
+    srcM["issues"] = [{"code": "REASON_UNVERIFIED", "severity": "WARN",
+                       "at": {"kind": "json-pointer", "value": "/because/0"}}]
+    receiptM["core"].update(warnings=1)
+    receiptM["core"]["execution_policy"]["runtimes"] = []
+    resM, fM = project(snapM, receiptM, casM)
+    sm.check_equal("a run with no declared semantics still validates", fM, [])
+    sm.check_equal("its IRI hashes an empty semantics field, not 'None'",
+                   {ln.split(" ")[0] for ln in resM["nquads"].decode().splitlines()
+                    if "sigma#CheckRun" in ln},
+                   {"<" + iri_run(sm.sha256_hex(sm.jcs(resM and receiptM["core"])),
+                                  srcM["computed_wid"], "/because/0",
+                                  srcM["reasons"][0]["reason_digest"], None) + ">"})
 
     # re-gate P2-1: the empty-corpus guard needs its own negative control
     code_guard = (
