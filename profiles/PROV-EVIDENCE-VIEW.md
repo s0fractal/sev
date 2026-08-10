@@ -451,7 +451,8 @@ receipt or snapshot, so a manifest never claims a loss it does not have:
 | L-NOSIG | The receipt carries signature results (validity/binding) and the projection emits no signature nodes at all |
 | L-NOSETTLE | The receipt carries jurisdiction-scoped settlement and the projection emits no settlement nodes at all |
 | L-NOUNCLAIMED | The snapshot pins `unclaimed` members that are not projected |
-| L-NOMAP | The §4.1 record-body mapping (actor, `under`/Plan, subject, evidence, `prior`) is not implemented by this projector |
+| L-NOISSUE | Projected sources carry issues in the receipt and no issue reaches the graph — an unqualified node is therefore not a clean one |
+| L-NOPROMOTE | The §4.1 mapping is emitted at its **weak defaults** (`wrt:claimedActor`, `wrt:underPolicy`); nothing in the receipt licenses promotion to `prov:Agent`, `prov:Association` or `prov:hadPlan`, so none is asserted |
 
 A caveat on an absent fact is worse than silence: it reads as
 "present, with reservations". Hence the split — qualify what is there,
@@ -460,8 +461,10 @@ declare what is not.
 **Every entry is dataset-relative.** This applies to the qualifying codes
 too, not only the `L-NO*` family: `L-REEXEC` only where a check run was
 emitted, `L-SETTLE` only where signature/settlement evidence exists,
-`L-CANON` only where the graph is non-empty, `L-NOMAP` only where a record
-was actually projected. A blob-only subroot therefore carries neither — a
+`L-CANON` only where the graph is non-empty, `L-NOPROMOTE` only where a
+record was actually projected, `L-NOISSUE` only where a PROJECTED source
+carries issues (an excluded source keeps its issues verbatim in the
+exclusion, so claiming the loss for it would qualify a preserved fact). A blob-only subroot therefore carries neither — a
 manifest that listed record, reason and signature losses over a dataset
 holding none of them would be making exactly the claim this section
 forbids.

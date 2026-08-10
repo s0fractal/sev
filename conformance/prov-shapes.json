@@ -43,10 +43,13 @@
     "http://www.w3.org/ns/prov#Person": "http://www.w3.org/ns/prov#Agent",
     "http://www.w3.org/ns/prov#SoftwareAgent": "http://www.w3.org/ns/prov#Agent",
     "http://www.w3.org/ns/prov#Organization": "http://www.w3.org/ns/prov#Agent",
-    "http://www.w3.org/ns/prov#Usage": "http://www.w3.org/ns/prov#Influence",
-    "http://www.w3.org/ns/prov#Association": "http://www.w3.org/ns/prov#Influence",
-    "http://www.w3.org/ns/prov#Attribution": "http://www.w3.org/ns/prov#Influence",
-    "http://www.w3.org/ns/prov#Collection": "http://www.w3.org/ns/prov#Entity"
+    "http://www.w3.org/ns/prov#Usage": "http://www.w3.org/ns/prov#EntityInfluence",
+    "http://www.w3.org/ns/prov#Association": "http://www.w3.org/ns/prov#AgentInfluence",
+    "http://www.w3.org/ns/prov#Attribution": "http://www.w3.org/ns/prov#AgentInfluence",
+    "http://www.w3.org/ns/prov#Collection": "http://www.w3.org/ns/prov#Entity",
+    "http://www.w3.org/ns/prov#EntityInfluence": "http://www.w3.org/ns/prov#Influence",
+    "http://www.w3.org/ns/prov#AgentInfluence": "http://www.w3.org/ns/prov#Influence",
+    "http://www.w3.org/ns/prov#ActivityInfluence": "http://www.w3.org/ns/prov#Influence"
   },
   "predicates": {
     "http://www.w3.org/ns/prov#used": {
@@ -176,18 +179,37 @@
       "object": {
         "kind": "any"
       }
+    },
+    "http://www.w3.org/ns/prov#entity": {
+      "object": {
+        "kind": "entity"
+      },
+      "subject": {
+        "class": "http://www.w3.org/ns/prov#EntityInfluence"
+      }
+    },
+    "http://www.w3.org/ns/prov#agent": {
+      "object": {
+        "kind": "agent"
+      },
+      "subject": {
+        "class": "http://www.w3.org/ns/prov#AgentInfluence"
+      }
     }
   },
   "predicate_notes": {
     "shape_language": "Each endpoint is {\"kind\": <root kind>} or {\"class\": <exact class IRI>}. A class requirement is satisfied by that class or any declared subclass of it.",
     "wasInfluencedBy": "PROV-O leaves this unconstrained across the roots; modelled as any->any rather than guessed.",
-    "qualified_relations": "PROV-O gives these exact ranges: qualifiedUsage->Usage, qualifiedAssociation->Association, qualifiedAttribution->Attribution, hadPlan Association->Plan, hadMember Collection->Entity."
+    "qualified_relations": "PROV-O gives these exact ranges: qualifiedUsage->Usage, qualifiedAssociation->Association, qualifiedAttribution->Attribution, hadPlan Association->Plan, hadMember Collection->Entity.",
+    "influence_splits": "prov:entity and prov:agent are the qualified-relation accessors, and their domains are the Influence SPLITS (EntityInfluence / AgentInfluence), not Influence itself. Registering only Influence would let an Association carry a prov:entity and a Usage carry a prov:agent -- the exact root-kind-instead-of-concrete-class defect earlier rounds found twice."
   },
   "mvp_predicates": [
-    "http://www.w3.org/ns/prov#used",
+    "http://www.w3.org/ns/prov#entity",
     "http://www.w3.org/ns/prov#generated",
-    "http://www.w3.org/ns/prov#wasGeneratedBy",
-    "http://www.w3.org/ns/prov#specializationOf"
+    "http://www.w3.org/ns/prov#qualifiedUsage",
+    "http://www.w3.org/ns/prov#specializationOf",
+    "http://www.w3.org/ns/prov#used",
+    "http://www.w3.org/ns/prov#wasGeneratedBy"
   ],
-  "mvp_note": "The subset the current projector can emit. The guard validates every predicate in `predicates` when it appears; this list exists so a reader can tell MVP coverage from target coverage without reading the projector."
+  "mvp_note": "The subset the current projector can emit. The guard validates every predicate in `predicates` when it appears; this list exists so a reader can tell MVP coverage from target coverage without reading the projector. The §4.1 record-body mapping added prov:qualifiedUsage and prov:entity: subject and evidence are uses BY THE FILING, qualified with sev:role, because 'this blob was the subject' and 'this blob was evidence' are different claims about the same bytes. Actor and policy stay at the profile's weak defaults (wrt:claimedActor, wrt:underPolicy) — nothing in the receipt licenses promotion to prov:Agent or prov:hadPlan, and that gap is declared as L-NOPROMOTE."
 }
