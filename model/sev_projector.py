@@ -1741,6 +1741,8 @@ def run_vectors():
     # (valid target graphs using oaip:Execution, oaip:Validation,
     # bos:Trajectory or wrt:Adjudication were rejected). Class -> parent;
     # roots carry the three disjoint PROV kinds.
+    # the only disjointness axiom PROV-O states among these three
+    DISJOINT_PAIRS = (("activity", "entity"),)
     ROOT_KINDS = {PROV_NS + "Activity": "activity",
                   PROV_NS + "Entity": "entity",
                   PROV_NS + "Agent": "agent"}
@@ -1830,11 +1832,16 @@ def run_vectors():
                     kinds.setdefault(subj, set()).add(kind)
 
         bad = set()
-        # disjointness is decided FIRST, over the closure — a forbidden kind
-        # must not be excused by a permitted one being present too
+        # Disjointness is decided FIRST, over the closure — but only for the
+        # pairs PROV-O actually declares disjoint. `prov:Activity` is
+        # disjoint with `prov:Entity`; an Agent may perfectly well also be an
+        # Entity, and PROV-O's own wasAssociatedWith example types its agent
+        # as Person, Agent AND Entity. Rejecting every multi-kind node
+        # rejected normative PROV.
         for node, have in kinds.items():
-            if len(have) > 1:
-                bad.add(("disjoint", "+".join(sorted(have)), node))
+            for a, b in DISJOINT_PAIRS:
+                if a in have and b in have:
+                    bad.add(("disjoint", "%s+%s" % (a, b), node))
 
         def _bad(node, is_iri, want):
             if not is_iri:
@@ -1842,7 +1849,10 @@ def run_vectors():
             have = kinds.get(node, set())
             if not have:
                 return want != "entity"        # untyped nodes are Entities
-            return have != {want}              # exactly the wanted kind
+            # after the real disjoint pairs are settled, a position asks only
+            # whether the required kind is present: a legal Agent∩Entity node
+            # satisfies both an Agent and an Entity position
+            return want not in have
 
         for terms in quads:
             (subj, s_iri), (pred, _p), (obj, o_iri) = terms[0], terms[1], terms[2]
@@ -1942,8 +1952,26 @@ def run_vectors():
         "<urn:sigma:run:a> %s <https://s0fractal.dev/ns/sigma#CheckRun> ." % T,
         "<urn:sigma:run:a> <http://www.w3.org/ns/prov#used> <urn:x> .")
     sm.check_true("a node typed Activity AND Entity is rejected outright",
-                  lambda: any(v[0] == "disjoint" for v in _prov_violations(_both))
-                  and any(v[0] == "object" for v in _prov_violations(_both)))
+                  lambda: ("disjoint", "activity+entity", "urn:x")
+                  in _prov_violations(_both))
+
+    # PROV-O's own normative wasAssociatedWith example: the agent is typed
+    # Person, Agent AND Entity. A guard that rejects every multi-kind node
+    # rejects normative PROV.
+    _derek = _nq(
+        "<urn:derek> %s <http://www.w3.org/ns/prov#Person> ." % T,
+        "<urn:derek> %s <http://www.w3.org/ns/prov#Entity> ." % T,
+        "<urn:act> %s <http://www.w3.org/ns/prov#Activity> ." % T,
+        "<urn:act> <http://www.w3.org/ns/prov#wasAssociatedWith> <urn:derek> .")
+    sm.check_equal("an Agent that is also an Entity is legal PROV",
+                   _prov_violations(_derek), set())
+    _derek_entity_pos = _nq(
+        "<urn:derek> %s <http://www.w3.org/ns/prov#Person> ." % T,
+        "<urn:derek> %s <http://www.w3.org/ns/prov#Entity> ." % T,
+        "<urn:sigma:run:a> %s <https://s0fractal.dev/ns/sigma#CheckRun> ." % T,
+        "<urn:sigma:run:a> <http://www.w3.org/ns/prov#used> <urn:derek> .")
+    sm.check_equal("...and satisfies an Entity position too",
+                   _prov_violations(_derek_entity_pos), set())
 
     # every Activity subclass the TARGET profile declares passes in its own
     # position — the previous hand-kept list produced false positives here

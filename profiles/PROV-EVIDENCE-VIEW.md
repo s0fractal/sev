@@ -528,6 +528,15 @@ reproduced countervector:
   `sev:sourceKind` and `sev:entryDigest`. Counting a member as projected
   while emitting nothing for it is the same silent-truncation class on the
   other branch of the union.
+- **Disjointness is an explicit axiom set, not "more than one kind".**
+  PROV-O declares `prov:Activity owl:disjointWith prov:Entity` — and that is
+  the only such axiom among the three roots. An Agent may also be an Entity;
+  PROV-O's own normative `wasAssociatedWith` example types its agent as
+  `Person`, `Agent` **and** `Entity`. So the guard checks the declared
+  disjoint pairs first, and a position then asks only whether the required
+  kind is *present* — a legal `Agent ∩ Entity` node satisfies both an Agent
+  and an Entity position. Treating all three roots as mutually disjoint, or
+  demanding an exact single kind, rejects normative PROV.
 - **The conformance guard is a type-closure machine, not a membership
   list.** It carries one machine-readable class hierarchy for the *whole*
   target profile (`class → parent`, roots being the three disjoint PROV
