@@ -6,7 +6,7 @@
 > a normative copy and instead pins the Warrant artifact/version/digest, and
 > this document remains here as provenance, marked superseded.
 
-**Status:** PROPOSAL SKETCH **rev 16** (2026-08-10), design-only, not filed.
+**Status:** PROPOSAL SKETCH **rev 17** (2026-08-10), design-only, not filed.
 Rev 5 (fifth Codex review, AMEND — compositional layer): the public verdict
 is **`verify_receipt_bytes(snapshot_raw, receipt_raw, cas)`** in the model (rev 16; the object-taking form is internal) —
 descriptor lookup by digest, semantic role check (incl. non-null
@@ -205,6 +205,18 @@ JCS-canonical I-JSON per warrant SPEC §4; closed schemas; one type tag.
 - ▲ **`global_issues[]`** carries store- and settlement-level problems that
   belong to no single source file (invalid threshold policy, unverified
   genesis, missing jurisdiction root).
+- ▲ **A reason's shape and its runtime's version-legality are part of the
+  body (rev 17).** The runtime enum is closed (`cmd@v1 | ski@v1`) and
+  `ski@v1` is reserved in a `"0.1"` body, so both belong to *the body being
+  valid*, not to a separate check that runs only when the receipt happens to
+  report that reason. Otherwise an unknown runtime could not be represented
+  as honest negative evidence at all, while every other schema defect could:
+  `BAD_REASON_SHAPE` for the closed enum, `REASON_RUNTIME_NOT_IN_VERSION`
+  for the version reservation. And an **acknowledged invalid body owes no
+  account of its reasons** — demanding a reason entry, and with it a run
+  outcome, for a reason the body cannot legally contain would require
+  inventing evidence about evidence already declared invalid
+  (`REASONS_OVER_INVALID_BODY` if one is reported anyway).
 - ▲ **The public verdict takes BYTES (rev 16).** An object-taking entry
   point cannot see byte-level facts at all: by the time a caller holds a
   dict, duplicate member names have collapsed, trailing data is gone, a BOM

@@ -2515,6 +2515,61 @@ def run_vectors():
                   lambda: resR is None and any(
                       x["code"] == "MISSING_BLOB_BUT_PRESENT" for x in fR))
 
+    # ---- round 16: an illegal reason runtime is honest negative evidence
+    def _bad_runtime_record(version, runtime, ack=True):
+        """A body whose reason runtime the schema forbids, honestly flagged."""
+        env = _upstream_env()
+        env["body"]["warrant"] = version
+        env["body"]["because"] = [{"kind": "check", "runtime": runtime,
+                                   "check": sm.sha256_hex(b"policy"),
+                                   "verdict": "pass"}]
+        issues = ([{"code": "BODY_SCHEMA_INVALID", "severity": "ERR",
+                    "at": {"kind": "path",
+                           "value": ".warrants/records/%s.json"
+                                    % sm.sha256_hex(sm.jcs(env["body"]))}}]
+                  if ack else [])
+        return _record_fixture(env, issues=issues, errors=len(issues))
+
+    # the two illegalities are DIFFERENT and keep different names: an
+    # unknown runtime violates the closed enum (a shape defect), while
+    # ski@v1 in a "0.1" body is well-shaped but reserved for that version
+    for label, version, runtime, code in [
+            ("an unknown runtime in a 0.2 body", "0.2", "evil@v1",
+             "BAD_REASON_SHAPE"),
+            ("ski@v1 in a 0.1 body", "0.1", "ski@v1",
+             "REASON_RUNTIME_NOT_IN_VERSION")]:
+        _rA, _fA = _project_objects(*_bad_runtime_record(version, runtime))
+        sm.check_equal("%s, acknowledged, is a valid receipt" % label, _fA, [])
+        sm.check_true("...and the record is excluded, never a graph node",
+                      lambda _rA=_rA: _rA["view_manifest"]["sources_excluded"] == 1
+                      and b"urn:wrt:record:" not in _rA["nquads"])
+        _rB, _fB = _project_objects(*_bad_runtime_record(version, runtime,
+                                                         ack=False))
+        sm.check_true("...while unacknowledged it is refused as %s" % code,
+                      lambda _fB=_fB, _rB=_rB, code=code: _rB is None
+                      and any(x["code"] == code for x in _fB))
+
+    # the legal counterpart still projects
+    _rC, _fC = _project_objects(*_bad_runtime_record("0.2", "ski@v1", ack=False))
+    sm.check_true("ski@v1 in a 0.2 body is legal at the schema level",
+                  lambda: not any(x["code"] == "REASON_RUNTIME_NOT_IN_VERSION"
+                                  for x in _fC))
+
+    # an acknowledged invalid body owes no account of its reasons
+    _snD, _rcD, _csD = _bad_runtime_record("0.2", "evil@v1")
+    _recD = [x for x in _rcD["core"]["sources"] if x["kind"] == "record"][0]
+    _recD["reasons"] = [{"ptr": "/because/0", "kind": "check",
+                         "runtime": "evil@v1", "reason_digest": "a" * 64,
+                         "outcome": {"re_execution": "not-applicable",
+                                     "claimed_verdict": "pass",
+                                     "observed_verdict": None,
+                                     "observed_result": None,
+                                     "atp_spent": None, "failure_code": None}}]
+    _rD, _fD = _project_objects(_snD, _rcD, _csD)
+    sm.check_true("reporting reasons over an invalid body is refused",
+                  lambda: _rD is None and any(
+                      x["code"] == "REASONS_OVER_INVALID_BODY" for x in _fD))
+
     # ---- round 15: the exported surface is byte-first, entirely ------
     import sev_projector as _self
 

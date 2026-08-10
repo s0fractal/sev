@@ -99,8 +99,21 @@ def body_schema_findings(body) -> list:
     because = body.get("because")
     if not isinstance(because, list):
         bad.append("BAD_BECAUSE")
-    elif body.get("decision") in REASON_REQUIRING_DECISIONS and not because:
-        bad.append("DECISION_WITHOUT_REASON")
+    else:
+        if body.get("decision") in REASON_REQUIRING_DECISIONS and not because:
+            bad.append("DECISION_WITHOUT_REASON")
+        # A reason's shape and its runtime's legality FOR THIS BODY VERSION
+        # are part of the body being valid — not a separate check that only
+        # runs when the receipt happens to report that reason. Otherwise an
+        # unknown runtime, or ski@v1 in a "0.1" body, could not be
+        # represented as honest negative evidence at all (round 16).
+        allowed = RUNTIME_REGISTRY.get(body.get("warrant"), set())
+        for item in because:
+            shape = _reason_shape(item)
+            if shape is None:
+                bad.append("BAD_REASON_SHAPE")
+            elif shape == "check" and item.get("runtime") not in allowed:
+                bad.append("REASON_RUNTIME_NOT_IN_VERSION")
     ts = body.get("ts")
     if not (_is_safe_int(ts) and ts >= 0):
         bad.append("BAD_TS")
@@ -808,6 +821,7 @@ def validate_receipt_core(core, descriptor=None, cas=None, view=None) -> list:
         # an edited body kept the graph asserting an identity the bytes no
         # longer have (re-gate P1-1).
         parsed = None
+        body_invalid_ack = False
         if cas is not None:
             parsed = _resolve_record(f, cas, src, at, issues)
             if parsed is not None:
@@ -822,7 +836,14 @@ def validate_receipt_core(core, descriptor=None, cas=None, view=None) -> list:
                     # like a parse failure, so honestly-reported invalid
                     # evidence can still be a valid receipt
                     if _acknowledges(issues, "BODY_SCHEMA_INVALID", src["path"]):
-                        pass
+                        # ...and an invalid body owes no account of its
+                        # reasons: demanding a reason entry (and with it a
+                        # run outcome) for a reason the body cannot legally
+                        # contain would require inventing evidence about
+                        # evidence already declared invalid
+                        body_invalid_ack = True
+                        if src.get("reasons"):
+                            _f(f, "REASONS_OVER_INVALID_BODY", at)
                     else:
                         for _code in _bad:
                             _f(f, _code, at)
@@ -1048,7 +1069,8 @@ def validate_receipt_core(core, descriptor=None, cas=None, view=None) -> list:
         # receipt chose to disclose.
         if parsed is not None:
             summary = _bind_to_envelope(f, parsed, src, good_sigs,
-                                        good_reasons, at, issues)
+                                        good_reasons, at, issues,
+                                        skip_reasons=body_invalid_ack)
             if view is not None:
                 # evidence PRESENCE is derived from the total derivation, so
                 # a malformed occurrence still counts as evidence the input
@@ -1118,10 +1140,16 @@ def _reason_shape(item):
         return "prose" if keys == {"kind", "text"} and isinstance(
             item.get("text"), str) else None
     if kind == "check":
+        # the runtime enum is CLOSED in Warrant's body schema; accepting any
+        # non-empty string made an unknown runtime a well-formed reason here
+        # while Warrant rejects the record outright (round 16)
+        known = set()
+        for _allowed in RUNTIME_REGISTRY.values():
+            known |= _allowed
         ok = (keys <= {"kind", "check", "runtime", "verdict", "transcript"}
               and {"kind", "check", "runtime", "verdict"} <= keys
               and _is_hex64(item.get("check"))
-              and isinstance(item.get("runtime"), str) and item["runtime"]
+              and item.get("runtime") in known
               and item.get("verdict") in VERDICTS
               and ("transcript" not in keys or _is_hex64(item["transcript"])))
         return "check" if ok else None
@@ -1191,7 +1219,8 @@ def _expected_malformed_issues(envelope, expected_sigs, sig_malformed,
     return out
 
 
-def _bind_to_envelope(f, envelope, src, good_sigs, good_reasons, at, issues):
+def _bind_to_envelope(f, envelope, src, good_sigs, good_reasons, at, issues,
+                      skip_reasons=False):
     expected_sigs, sig_malformed = envelope_signature_entries(envelope)
     expected_keyed = {(d, m): (a, k) for d, m, a, k, _i in expected_sigs}
     reported = {}
@@ -1211,6 +1240,11 @@ def _bind_to_envelope(f, envelope, src, good_sigs, good_reasons, at, issues):
             _f(f, "SIGNATURE_FIELD_MISMATCH", "%s [%s:%d]" % (at, key[0], key[1]))
 
     expected_ptrs, reason_malformed = reportable_reason_pointers(envelope)
+    if skip_reasons:
+        # the body is declared invalid and acknowledged: its reasons are not
+        # reportable evidence, so neither their bijection nor their
+        # malformed occurrences are demanded
+        expected_ptrs, reason_malformed = set(), []
     reported_ptrs = {}
     for r in good_reasons:
         if r["ptr"] in reported_ptrs:
