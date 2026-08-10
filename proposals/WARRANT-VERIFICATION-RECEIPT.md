@@ -6,9 +6,9 @@
 > a normative copy and instead pins the Warrant artifact/version/digest, and
 > this document remains here as provenance, marked superseded.
 
-**Status:** PROPOSAL SKETCH **rev 15** (2026-08-10), design-only, not filed.
+**Status:** PROPOSAL SKETCH **rev 17** (2026-08-10), design-only, not filed.
 Rev 5 (fifth Codex review, AMEND — compositional layer): the public verdict
-is now **`validate_warrant_receipt(snapshot, receipt, cas)`** in the model —
+is **`verify_receipt_bytes(snapshot_raw, receipt_raw, cas)`** in the model (rev 16; the object-taking form is internal) —
 descriptor lookup by digest, semantic role check (incl. non-null
 `spec_digest`) *inside* the composed verdict, **exact universe↔sources
 bijection** (an empty `sources[]` against a populated universe is a finding,
@@ -205,6 +205,47 @@ JCS-canonical I-JSON per warrant SPEC §4; closed schemas; one type tag.
 - ▲ **`global_issues[]`** carries store- and settlement-level problems that
   belong to no single source file (invalid threshold policy, unverified
   genesis, missing jurisdiction root).
+- ▲ **A reason's shape and its runtime's version-legality are part of the
+  body (rev 17).** The runtime enum is closed (`cmd@v1 | ski@v1`) and
+  `ski@v1` is reserved in a `"0.1"` body, so both belong to *the body being
+  valid*, not to a separate check that runs only when the receipt happens to
+  report that reason. Otherwise an unknown runtime could not be represented
+  as honest negative evidence at all, while every other schema defect could:
+  `BAD_REASON_SHAPE` for the closed enum, `REASON_RUNTIME_NOT_IN_VERSION`
+  for the version reservation. And an **acknowledged invalid body owes no
+  account of its reasons** — demanding a reason entry, and with it a run
+  outcome, for a reason the body cannot legally contain would require
+  inventing evidence about evidence already declared invalid
+  (`REASONS_OVER_INVALID_BODY` if one is reported anyway).
+- ▲ **The public verdict takes BYTES (rev 16).** An object-taking entry
+  point cannot see byte-level facts at all: by the time a caller holds a
+  dict, duplicate member names have collapsed, trailing data is gone, a BOM
+  is gone. A public verdict over objects therefore hands out clean results
+  over bytes the format rejects — not by lying, but by never having been
+  shown them. `verify_receipt_bytes(snapshot_raw, receipt_raw, cas)` is the
+  interface; the object path is internal.
+- ▲ **`INVALID_SIGNATURE` names the index that failed (rev 16).** Counting
+  occurrences proved only "as many issues as failures"; the acknowledgement
+  must sit at the failing signature's own `/sigs/i`, derived from envelope
+  order. Findings: `INVALID_SIG_UNREPORTED_AT`,
+  `INVALID_SIG_REPORTED_AT_SOUND`.
+- ▲ **Every record's body is version- and schema-checked (rev 16)**,
+  independently of whether it carries a check reason — validating the
+  version only inside the reason loop left prose-only and reason-free
+  records unexamined. `UNKNOWN_BODY_VERSION`, `BODY_SCHEMA_INVALID`,
+  `BAD_DECISION`, `BAD_TS`, `BODY_NOT_OBJECT`.
+- ▲ **`cmd@v1` is never declared and never re-executed (rev 16).** Its
+  trust model is the container and `verify` does not re-run it (warrant SPEC
+  §3, §6(7)), so declaring it in an `execution_policy` asserts a capability
+  the contract denies, and reporting a `matched`/`mismatched` over it
+  reports something a verifier does not do. `not-applicable` additionally
+  requires its absence from the policy.
+- ▲ **`MISSING_BLOB` is refutable (rev 16).** If the committed check
+  resolves to an available blob in the same subroot, that failure did not
+  happen: `MISSING_BLOB_BUT_PRESENT`.
+- ▲ **A refused verdict publishes nothing (rev 16),** and a sink of the
+  wrong type fails closed rather than being duck-typed — guessing at it
+  would run caller code inside the verdict (`BAD_VIEW_SINK`).
 - ▲ **A source's issues are local to that source (rev 15).** In
   `sources[].issues[]` a `path` locator MUST equal that source's own path,
   `json-pointer` and `byte-range` are relative to it, and the `global` kind
