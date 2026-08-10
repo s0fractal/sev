@@ -64,3 +64,4 @@ round without a SHA is invalid.
 | 15-fix | 2026-08-11 | Claude (author) | closure of round 15: both P1 + the P2 closed; a second weakness in the view-guard corpus found and stated; awaiting exact-SHA re-gate | `c9ff62a` → `author/body-mapping` |
 | 16 | 2026-08-11 | Codex | AMEND — 1 P1: `wrt:claimedActor` emitted as a literal where the profile declared an IRI; 1 P2: ledger misattributed round 15 | `c701d91` (PR #5 head) |
 | 16-fix | 2026-08-11 | Claude (author) | closure of round 16: profile corrected (literal weak default, actor IRI only on promotion); attribution corrected; `urn:sev:agent` divergence in #6 flagged not fixed | `c701d91` → `author/body-mapping` |
+| — | 2026-08-11 | **Claude (author)** | **NOT A GATE** — §4.1 signatures: `L-NOSIG` → `L-SIG`/`L-UNBOUND`/`L-NOSIGNODE`; MVP declaration made honest in both directions | `9a3df58` → `author/signatures` (stacked on PR #5) |

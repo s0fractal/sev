@@ -448,7 +448,9 @@ receipt or snapshot, so a manifest never claims a loss it does not have:
 
 | Code | Declares |
 |---|---|
-| L-NOSIG | The receipt carries signature results (validity/binding) and the projection emits no signature nodes at all |
+| L-NOSIGNODE | Some signature OCCURRENCES are malformed and carried as issues rather than entries; they get no signature node |
+| L-SIG | Signature validity and binding are **copied** from the receipt; SEV performs no cryptography and re-derives neither |
+| L-UNBOUND | Signatures that are not both `valid` and `bound` attribute no agent; they carry `wrt:claimedSigner` instead |
 | L-NOSETTLE | The receipt carries jurisdiction-scoped settlement and the projection emits no settlement nodes at all |
 | L-NOUNCLAIMED | The snapshot pins `unclaimed` members that are not projected |
 | L-NOISSUE | Projected sources carry issues in the receipt and no issue reaches the graph — an unqualified node is therefore not a clean one |
