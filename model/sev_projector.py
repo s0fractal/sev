@@ -181,9 +181,12 @@ def project(snapshot, receipt, cas) -> tuple:
     vgraph = iri_verify_graph(core_digest)
     g = Graph()
 
+    emitted_kinds = set()
+
     # verification graph: the receipt itself, mechanically produced
     rnode = iri_receipt(core_digest)
     g.add(rnode, RDF_TYPE, _iri(SEV + "VerificationReceipt"), vgraph)
+    emitted_kinds.add("verification-receipt")
     g.add(rnode, SEV + "grade", _lit(core["grade"]), vgraph)
     g.add(rnode, SEV + "ok", _lit(core["ok"]), vgraph)
     g.add(rnode, SEV + "subrootDescriptorDigest",
@@ -229,6 +232,7 @@ def project(snapshot, receipt, cas) -> tuple:
             # is linked, not conflated — two paths with identical bytes are
             # two occurrences of one content.
             node = iri_source(subroot_digest, src["path"], src["entry_digest"])
+            emitted_kinds.add("source")
             g.add(node, RDF_TYPE, _iri(SEV + "Source"))
             g.add(node, SEV + "path", _lit(src["path"]))
             g.add(node, SEV + "sourceKind", _lit(src["kind"]))
@@ -244,6 +248,7 @@ def project(snapshot, receipt, cas) -> tuple:
         wid = src["computed_wid"]
         rec, filing = iri_record(wid), iri_filing(src["entry_digest"])
         occ = iri_source(subroot_digest, src["path"], src["entry_digest"])
+        emitted_kinds.update(("source", "record", "filing"))
         g.add(rec, RDF_TYPE, _iri(WRT + "Warrant"))
         g.add(rec, PROV + "wasGeneratedBy", _iri(filing))
         g.add(filing, RDF_TYPE, _iri(WRT + "Filing"))
@@ -263,6 +268,7 @@ def project(snapshot, receipt, cas) -> tuple:
             # the reason is a stable fact of the record; the run is one
             # execution of it under one declared semantics
             reason_node = iri_reason(wid, reason["ptr"], reason["reason_digest"])
+            emitted_kinds.add("reason")
             g.add(reason_node, RDF_TYPE, _iri(WRT + "Reason"))
             g.add(reason_node, SEV + "pointer", _lit(reason["ptr"]))
             g.add(reason_node, SIGMA + "reasonDigest", _lit(reason["reason_digest"]))
@@ -284,6 +290,7 @@ def project(snapshot, receipt, cas) -> tuple:
 
             run = iri_run(core_digest, wid, reason["ptr"],
                           reason["reason_digest"], sem)
+            emitted_kinds.add("check-run")
             g.add(run, RDF_TYPE, _iri(SIGMA + "CheckRun"), vgraph)
             g.add(run, PROV + "used", _iri(reason_node), vgraph)
             if check_blob and check_present and o["re_execution"] in (
@@ -336,19 +343,44 @@ def project(snapshot, receipt, cas) -> tuple:
     if has_unclaimed:
         absent.append(loss("L-NOUNCLAIMED", "the snapshot pins unclaimed members; "
                                             "they are not projected"))
-    absent.append(loss("L-NOMAP", "profile §4.1 record-body mapping is not "
-                                  "implemented: actor, under/Plan, subject, "
-                                  "evidence and prior are absent from the graph"))
+    # §4.1 body mapping only applies where a record was actually projected: a
+    # blob-only subroot has no body to map, and claiming the loss would be a
+    # caveat on an absent fact — the very thing this manifest exists to stop
+    if "record" in emitted_kinds:
+        absent.append(loss("L-NOMAP", "profile §4.1 record-body mapping is not "
+                                      "implemented: actor, under/Plan, subject, "
+                                      "evidence and prior are absent from the graph"))
 
-    loss_manifest = {"loss_manifest": "sev@v0", "entries": absent + [
-        loss("L-SIG", "signature validity/binding, WHERE PROJECTED, would be "
-                      "receipt-reported only; re-verification needs envelope bytes"),
-        loss("L-SETTLE", "settlement/grade are not re-derivable from the graph"),
-        loss("L-REEXEC", "the graph records past re-executions; it cannot re-run"),
-        loss("L-CANON", "canonical bytes are not recoverable from the graph"),
-        loss("L-COMPLETE", "completeness is relative to the sealed snapshot"),
-    ] + ([loss("L-UNJUDGED", "unreceipted subroots: " + ", ".join(unjudged))]
-         if unjudged else [])}
+    # Every remaining loss is likewise dataset-relative: emitted only when the
+    # graph actually contains the thing being qualified.
+    qualified = []
+    if has_sigs or has_settlement:
+        qualified.append(loss("L-SETTLE", "grade is emitted on the receipt node but "
+                                          "is not re-derivable from the graph"))
+    if "check-run" in emitted_kinds:
+        qualified.append(loss("L-REEXEC", "the graph records past re-executions; "
+                                          "it cannot re-run them"))
+    if emitted_kinds:
+        qualified.append(loss("L-CANON", "canonical bytes are not recoverable from "
+                                         "the graph; hashes are copied, not "
+                                         "recomputable"))
+    qualified.append(loss("L-COMPLETE", "completeness is relative to the sealed "
+                                        "snapshot's universe, never global"))
+    if unjudged:
+        qualified.append(loss("L-UNJUDGED", "unreceipted subroots: "
+                              + ", ".join(unjudged)))
+
+    loss_manifest = {"loss_manifest": "sev@v0", "entries": absent + qualified}
+
+    not_emitted = set()
+    if has_sigs:
+        not_emitted.add("signature")
+    if has_settlement:
+        not_emitted.add("settlement")
+    if has_unclaimed:
+        not_emitted.add("unclaimed")
+    if "record" in emitted_kinds:      # a body exists, so its mapping is missing
+        not_emitted.update(("actor", "policy-plan", "subject", "evidence", "prior"))
 
     sources = core["sources"]
     view_manifest = {
@@ -366,11 +398,13 @@ def project(snapshot, receipt, cas) -> tuple:
         "sources_excluded": len(exclusions),
         "exclusions": exclusions,
         "coverage": {
-            "emitted": ["source", "record", "filing", "reason", "check-run",
-                        "verification-receipt"],
-            "not_emitted": ["signature", "settlement", "actor", "policy-plan",
-                            "subject", "evidence", "prior", "unclaimed"],
-            "note": "sources_projected counts sources admitted to the graph, "
+            # DATASET-RELATIVE, derived from what this run actually emitted
+            # and from what evidence the input actually held — never a static
+            # capability list, which claimed categories absent from the input
+            "emitted": sorted(emitted_kinds),
+            "not_emitted": sorted(not_emitted),
+            "note": "categories are relative to THIS dataset; "
+                    "sources_projected counts sources admitted to the graph, "
                     "NOT completeness of the profile mapping over them",
         },
         "unverified_reasons": unverified,
@@ -1151,6 +1185,74 @@ def run_vectors():
                    [x["code"] for x in fO], ["INPUT_NOT_FREEZABLE"])
     sm.check_true("...and the honest plain-dict path still projects",
                   lambda: project(snapO, receiptO, casO)[1] == [])
+
+    # re-gate: cyclic / over-deep plain containers must REFUSE, not crash.
+    # These are exact dict/list values, so the type check alone lets them in.
+    snapP, receiptP, casP = fixture()
+    cyc_dict = json.loads(json.dumps(receiptP))
+    cyc_dict["core"]["self"] = cyc_dict           # dict cycle
+    cyc_list_receipt = json.loads(json.dumps(receiptP))
+    loop = []
+    loop.append(loop)                             # list cycle
+    cyc_list_receipt["core"]["loop"] = loop
+    deep = cur = {}
+    for _ in range(sm.MAX_FREEZE_DEPTH + 5):      # over depth budget
+        cur["n"] = {}
+        cur = cur["n"]
+    deep_receipt = json.loads(json.dumps(receiptP))
+    deep_receipt["core"]["deep"] = deep
+    cyc_snapshot = json.loads(json.dumps(snapP))
+    cyc_snapshot["self"] = cyc_snapshot
+
+    for label, sn, rc in [("dict-cycle in receipt", snapP, cyc_dict),
+                          ("list-cycle in receipt", snapP, cyc_list_receipt),
+                          ("over-depth in receipt", snapP, deep_receipt),
+                          ("dict-cycle in snapshot", cyc_snapshot, receiptP)]:
+        try:
+            resP, fP = project(sn, rc, casP)
+            ok = resP is None and [x["code"] for x in fP] == ["INPUT_NOT_FREEZABLE"]
+            detail = "" if ok else "findings=%s" % [x["code"] for x in fP]
+        except RecursionError:
+            ok, detail = False, "RecursionError escaped project()"
+        sm._record("%s -> bounded INPUT_NOT_FREEZABLE" % label, ok, detail)
+
+    # re-gate: a blob-only dataset must not claim record/reason/run evidence
+    only_blob = {".warrants/blobs/p": b"policy"}
+    uniB = sm.seal_universe(only_blob)
+    dB = sm.subroot_descriptor("warrant",
+                               {"name": "warrant", "version": "0.4",
+                                "spec_digest": sm.sha256_hex(b"spec")},
+                               ".warrants/", uniB)
+    snapB = sm.snapshot_object([dB], [])
+    casB = {sm.sha256_hex(v): v for v in only_blob.values()}
+    coreB = {"subroot_descriptor_digest": sm.subroot_descriptor_digest(dB),
+             "grade": "base", "trust_config_digest": None,
+             "execution_policy": {"runtimes": []},
+             "ok": True, "errors": 0, "warnings": 0, "global_issues": [],
+             "sources": [{"kind": "blob", "path": ".warrants/blobs/p",
+                          "entry_digest": uniB[0]["sha256"], "loaded": True,
+                          "issues": []}]}
+    receiptB = {"receipt": "warrant.verification-receipt@v0", "core": coreB,
+                "producer": {"impl": "x", "artifact_digest": None, "spec": "0.4",
+                             "report_digest": "f" * 64, "local_notes": []}}
+    resB, fB = project(snapB, receiptB, casB)
+    covB = resB["view_manifest"]["coverage"]
+    codesB = [e["code"] for e in resB["loss_manifest"]["entries"]]
+    sm.check_equal("blob-only dataset validates", fB, [])
+    sm.check_equal("coverage claims only what this dataset holds",
+                   covB["emitted"], ["source", "verification-receipt"])
+    sm.check_equal("nothing is declared un-emitted that never existed",
+                   covB["not_emitted"], [])
+    sm.check_true("no losses about records, reasons, runs or signatures",
+                  lambda: not ({"L-NOMAP", "L-NOSIG", "L-NOSETTLE",
+                                "L-REEXEC", "L-SETTLE"} & set(codesB)))
+    sm.check_true("the losses that DO apply are still stated",
+                  lambda: {"L-CANON", "L-COMPLETE"} <= set(codesB))
+    # ...while the full fixture, which does hold those facts, still declares them
+    fullres, _ = project(*fixture())
+    codesFull = [e["code"] for e in fullres["loss_manifest"]["entries"]]
+    sm.check_true("a record-bearing dataset still declares L-NOMAP and L-REEXEC",
+                  lambda: {"L-NOMAP", "L-REEXEC"} <= set(codesFull))
 
     # re-gate P2-1: the empty-corpus guard needs its own negative control
     code_guard = (

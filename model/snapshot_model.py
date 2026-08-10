@@ -929,29 +929,56 @@ class _NotFreezable(Exception):
     """Raised instead of silently sharing an object with the caller."""
 
 
-def _freeze(value):
+MAX_FREEZE_DEPTH = 64        # these contracts are shallow by construction
+MAX_FREEZE_NODES = 1000000   # a budget, not a guess: refusal, never a crash
+
+
+def _freeze(value, _depth=0, _active=None, _budget=None):
     """A private detached copy, built from exact JSON built-ins only.
 
-    Never returns the original. The previous version fell back to the input
-    on a deepcopy failure, which meant the isolation opened up for exactly
-    the inputs that need it most: an uncopyable mapping stayed shared with
-    the caller and could be mutated between verdict and projection. Exact
-    `type(x) is …` checks (not isinstance) also reject subclasses, which are
-    the usual carrier for read-dependent behaviour.
+    Never returns the original: the earlier version fell back to the input
+    when `deepcopy` raised, so isolation opened for exactly the hostile
+    inputs it exists for. Exact `type(x) is …` checks (not `isinstance`)
+    reject subclasses, the usual carrier of read-dependent behaviour.
+
+    Total by construction: exact `dict`/`list` values can still be cyclic or
+    deeper than the interpreter's recursion limit, and a `RecursionError`
+    escaping `project()` is a crash where the contract promises bounded
+    findings. Cycles are detected on the active path and depth/node budgets
+    are explicit; every refusal becomes `INPUT_NOT_FREEZABLE`.
     """
+    if _active is None:
+        _active, _budget = set(), [MAX_FREEZE_NODES]
     t = type(value)
     if value is None or t is bool or t is int or t is str:
         return value
-    if t is list:
-        return [_freeze(v) for v in value]
-    if t is dict:
+    if t is not list and t is not dict:
+        raise _NotFreezable(repr(t))
+    if _depth >= MAX_FREEZE_DEPTH:
+        raise _NotFreezable("over depth budget")
+    _budget[0] -= 1
+    if _budget[0] < 0:
+        raise _NotFreezable("over node budget")
+    ident = id(value)
+    if ident in _active:
+        # Defense in depth, labelled as unisolatable: with this clause removed
+        # a cycle still terminates on the depth budget above, so no vector can
+        # distinguish the two today. It is kept because it gives the precise
+        # reason and because it stays load-bearing if the depth budget is ever
+        # raised. Mutation-tested and stated, not counted as covered.
+        raise _NotFreezable("cyclic container")
+    _active.add(ident)
+    try:
+        if t is list:
+            return [_freeze(v, _depth + 1, _active, _budget) for v in value]
         out = {}
         for k, v in value.items():
             if type(k) is not str:
                 raise _NotFreezable("non-string key")
-            out[k] = _freeze(v)
+            out[k] = _freeze(v, _depth + 1, _active, _budget)
         return out
-    raise _NotFreezable(repr(t))
+    finally:
+        _active.discard(ident)
 
 
 def validate_warrant_receipt(snapshot, receipt, cas=None, expected_version="0.4",
@@ -967,7 +994,7 @@ def validate_warrant_receipt(snapshot, receipt, cas=None, expected_version="0.4"
         try:
             frozen_snapshot = _freeze(snapshot)
             frozen_receipt = _freeze(receipt)
-        except _NotFreezable:
+        except (_NotFreezable, RecursionError):
             # Fail closed: an input that cannot be detached is refused, never
             # judged-then-shared. The view stays empty, so no consumer can
             # mistake a partial freeze for a validated one.

@@ -341,6 +341,13 @@ semantica's "single shared intelligence layer").
 
 ## 6. What travels, what doesn't
 
+> **`coverage` is dataset-relative, not a capability list.** Its `emitted`
+> set is derived from what the run actually put in the graph and its
+> `not_emitted` set from evidence the input actually held; a static list of
+> what the projector *could* emit would claim categories absent from the
+> input. If a capability list is ever wanted, it belongs in a separate
+> `projector_capabilities` field with `supported`/`unsupported`, never here.
+>
 > **Target profile vs current MVP coverage.** Everything in this section
 > describes the *target* `sev@v0` mapping. The reference projector
 > (`model/sev_projector.py`) implements a deliberately narrow subset and
@@ -426,6 +433,15 @@ A caveat on an absent fact is worse than silence: it reads as
 "present, with reservations". Hence the split — qualify what is there,
 declare what is not.
 
+**Every entry is dataset-relative.** This applies to the qualifying codes
+too, not only the `L-NO*` family: `L-REEXEC` only where a check run was
+emitted, `L-SETTLE` only where signature/settlement evidence exists,
+`L-CANON` only where the graph is non-empty, `L-NOMAP` only where a record
+was actually projected. A blob-only subroot therefore carries neither — a
+manifest that listed record, reason and signature losses over a dataset
+holding none of them would be making exactly the claim this section
+forbids.
+
 Each entry carries `code`, `affects` (IRIs or `"*"`), and `recheck` — an
 **argv array** plus the digest of the tool/profile that interprets it
 (`{"argv": ["warrant", "--store", "…", "verify"], "tool_digest": "<hex64>"}`),
@@ -453,11 +469,9 @@ the hash, not the host — and not this graph either."
                     "projection_reason": "ERR_ISSUES | NOT_LOADED | ID_UNSOUND",
                     "issues": [ {"code": "…", "severity": "ERR", "at": {"…"}} ] } ],
   "coverage": {
-    "emitted": ["source", "record", "filing", "reason", "check-run",
-                "verification-receipt"],
-    "not_emitted": ["signature", "settlement", "actor", "policy-plan",
-                    "subject", "evidence", "prior", "unclaimed"],
-    "note": "sources_projected counts sources admitted to the graph, NOT completeness of the profile mapping over them"
+    "emitted": ["<categories THIS dataset actually contains>"],
+    "not_emitted": ["<categories whose input evidence exists but is not projected>"],
+    "note": "categories are relative to THIS dataset; sources_projected counts sources admitted to the graph, NOT completeness of the profile mapping over them"
   },
   "unverified_reasons": 0,
   "graph_digest": "<hex64>",
