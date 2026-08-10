@@ -168,7 +168,11 @@ def _tool_digest():
 
 def project(snapshot, receipt, cas) -> tuple:
     """(result dict | None, findings). Pure function of its inputs: no
-    clocks, no randomness, no filesystem reads beyond the tool digest."""
+    clocks, no randomness, no filesystem reads beyond the tool digest.
+
+    `cas` is required: projecting without an evidence resolver would turn
+    "nothing could be checked" into an emitted evidence view.
+    """
     # ONE validation pass produces both the verdict and the parsed view it
     # was rendered over. Re-reading the CAS afterwards let a stateful
     # resolver hand the projector different bytes than the verdict judged
@@ -1952,6 +1956,13 @@ def run_vectors():
     sm.check_true("a node typed Activity AND Entity is rejected outright",
                   lambda: ("disjoint", "activity+entity", "urn:x")
                   in _prov_violations(_both))
+
+    # the MVP inherits the core rule: no evidence resolver, no projection
+    snNo, rcNo, _csNo = ski_fixture()
+    resNo, fNo = project(snNo, rcNo, None)
+    sm.check_true("projecting without an evidence store is refused",
+                  lambda: resNo is None
+                  and [x["code"] for x in fNo] == ["CAS_REQUIRED"])
 
     # the shapes artifact validates itself before anything trusts it
     sm.check_equal("the shapes artifact is internally sound", _validate_shapes(), [])

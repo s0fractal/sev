@@ -332,10 +332,16 @@ def cas_resolve(store, digest):
     except KeyError:
         raise
     except Exception as exc:  # noqa: BLE001 — external resolver, bounded here
-        raise SealViolation("CAS_RESOLVER_FAILED", repr(exc))
-    if not isinstance(data, (bytes, bytearray)):
+        # NOT repr(exc): an attacker-supplied exception's __repr__ is code,
+        # and calling it in the failure path re-executes hostile logic. The
+        # class name is metadata Python already holds.
+        raise SealViolation("CAS_RESOLVER_FAILED", type(exc).__name__)
+    # exact built-in types only: a bytes/bytearray SUBCLASS can override
+    # __bytes__, so the conversion itself would run hostile code
+    if type(data) is bytearray:
+        data = bytes(data)
+    elif type(data) is not bytes:
         raise SealViolation("CAS_NOT_BYTES", type(data).__name__)
-    data = bytes(data)
     if sha256_hex(data) != digest:
         raise SealViolation("CAS_DIGEST_MISMATCH", digest)
     return data
@@ -1210,7 +1216,17 @@ def _freeze(value, _depth=0, _active=None, _budget=None):
         _active.discard(ident)
 
 
-def validate_warrant_receipt(snapshot, receipt, cas=None, expected_version="0.4",
+def validate_structure_only(snapshot, receipt, expected_version="0.4") -> list:
+    """Shape-only inspection with NO evidence bytes. Deliberately named so it
+    can never be mistaken for verification: record identity, envelope
+    completeness and reason binding are all byte-derived and are simply not
+    performed here. Its clean result means "nothing structurally wrong",
+    never "verified"."""
+    return _verdict(snapshot, receipt, None, expected_version, {},
+                    structural_only=True)
+
+
+def validate_warrant_receipt(snapshot, receipt, cas, expected_version="0.4",
                              view=None) -> list:
     """THE public verdict tying receipt to snapshot: descriptor lookup, role
     check, exact universe<->sources bijection, per-source digests, then the
@@ -1226,11 +1242,23 @@ def validate_warrant_receipt(snapshot, receipt, cas=None, expected_version="0.4"
     internal = {}
     findings = _verdict(snapshot, receipt, cas, expected_version, internal)
     if view is not None:
+        # clear before publishing: a reused sink must not keep keys from an
+        # earlier, successful verdict when this one returns early (P2)
+        view.clear()
         view.update(internal)
     return findings
 
 
-def _verdict(snapshot, receipt, cas, expected_version, view) -> list:
+def _verdict(snapshot, receipt, cas, expected_version, view,
+             structural_only=False) -> list:
+    # Absence of evidence bytes is not evidence of correctness. Every
+    # byte-derived check — WarrantID re-derivation, envelope signature and
+    # reason completeness, the semantic reason binding — is skipped without a
+    # store, so a clean result would mean "nothing could be checked" while
+    # reading as "verified" (core re-gate P1).
+    if cas is None and not structural_only:
+        view.clear()
+        return [{"code": "CAS_REQUIRED", "severity": "ERR", "at": "/"}]
     # Freeze the inputs BEFORE judging them, unconditionally.
     try:
         snapshot = _freeze(snapshot)
@@ -1556,9 +1584,9 @@ def run_vectors():
             validate_snapshot(v)
             validate_snapshot(v, {})
             validate_receipt_core(v)
-            validate_warrant_receipt(v, v)
+            validate_warrant_receipt(v, v, {})
             validate_warrant_receipt({}, {"receipt": "warrant.verification-receipt@v0",
-                                          "core": v, "producer": {}})
+                                          "core": v, "producer": {}}, {})
         return True
     check_true("hostile shapes -> findings, never exceptions", _no_crash)
 
@@ -1697,6 +1725,82 @@ def run_vectors():
                lambda: _sinks_agree(snap, no_blob, cas)
                and any(x["code"] == "CHECK_BLOB_ABSENT"
                        for x in validate_warrant_receipt(snap, no_blob, cas)))
+
+    # absence of evidence bytes is never a clean verdict
+    resealed = _mutate(receipt, lambda r: None)
+    reason2 = {"kind": "check", "runtime": "ski@v1",
+               "check": sha256_hex(b"policy"), "verdict": "pass",
+               "transcript": "b" * 64}
+    body2 = {"warrant": "0.2", "decision": "accept", "subject": {}, "under": [],
+             "because": [reason2], "evidence": [], "actor": {"id": "x"},
+             "prior": [], "ts": 2}                      # ts 1 -> 2
+    rec2 = {"body": body2,
+            "sigs": [{"actor": "x", "key": "c" * 64, "sig": "d" * 128}]}
+    files2 = {".warrants/records/r.json": jcs(rec2),
+              ".warrants/blobs/p": b"policy"}
+    cas2 = {sha256_hex(v): v for v in files2.values()}
+    uni2 = seal_universe(files2)
+    d2 = subroot_descriptor("warrant",
+                            {"name": "warrant", "version": "0.4",
+                             "spec_digest": sha256_hex(b"spec")},
+                            ".warrants/", uni2)
+    snap2 = snapshot_object([d2], [])
+    resealed["core"]["subroot_descriptor_digest"] = subroot_descriptor_digest(d2)
+    bp2 = {e["path"]: e["sha256"] for e in uni2}
+    for src in resealed["core"]["sources"]:
+        src["entry_digest"] = bp2[src["path"]]      # resealed, but the receipt
+                                                    # keeps the OLD WarrantID
+    check_equal("a resealed changed body is caught WITH evidence bytes",
+                [x["code"] for x in
+                 validate_warrant_receipt(snap2, resealed, cas2)
+                 if x["code"] == "COMPUTED_WID_MISMATCH"],
+                ["COMPUTED_WID_MISMATCH"])
+    check_equal("...and omitting the store is refused, not accepted",
+                [x["code"] for x in
+                 validate_warrant_receipt(snap2, resealed, None)],
+                ["CAS_REQUIRED"])
+    check_true("...while an empty store reports the missing bytes",
+               lambda: any(x["code"] in ("CAS_UNRESOLVABLE", "RECORD_UNRESOLVABLE")
+                           for x in validate_warrant_receipt(snap2, resealed, {})))
+    check_true("structural-only inspection is separately named",
+               lambda: "CAS_REQUIRED" not in
+               [x["code"] for x in validate_structure_only(snap2, resealed)])
+
+    # a reused sink must not keep a previous successful view
+    sink = {}
+    validate_warrant_receipt(snap, receipt, cas, view=sink)
+    check_true("a successful verdict populates the sink", lambda: "core" in sink)
+
+    class Uncopyable2(dict):
+        def __deepcopy__(self, memo):
+            raise RuntimeError("nope")
+    validate_warrant_receipt(snap, Uncopyable2(receipt), cas, view=sink)
+    check_equal("a refused verdict leaves no stale view behind", sink, {})
+
+    # the CAS failure path must not re-execute hostile code
+    class HostileRepr(Exception):
+        def __repr__(self):
+            raise RuntimeError("repr is code")
+
+    class ReprCAS(dict):
+        def __getitem__(self, k):
+            raise HostileRepr()
+
+    class HostileBytes(bytes):
+        def __bytes__(self):
+            raise RuntimeError("__bytes__ is code")
+
+    class SubclassCAS(dict):
+        def __getitem__(self, k):
+            return HostileBytes(b"x")
+
+    for label, store in [("an exception with a hostile __repr__", ReprCAS(cas)),
+                         ("a bytes subclass with a hostile __bytes__",
+                          SubclassCAS(cas))]:
+        check_true("CAS failure path is bounded: %s" % label,
+                   lambda store=store: all(
+                       isinstance(x, dict)
+                       for x in validate_warrant_receipt(snap, receipt, store)))
 
     # the freeze is unconditional — the model suite must prove it too, not
     # only the projector's TOCTOU vectors

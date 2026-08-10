@@ -6,7 +6,7 @@
 > a normative copy and instead pins the Warrant artifact/version/digest, and
 > this document remains here as provenance, marked superseded.
 
-**Status:** PROPOSAL SKETCH **rev 12** (2026-08-10), design-only, not filed.
+**Status:** PROPOSAL SKETCH **rev 13** (2026-08-10), design-only, not filed.
 Rev 5 (fifth Codex review, AMEND — compositional layer): the public verdict
 is now **`validate_warrant_receipt(snapshot, receipt, cas)`** in the model —
 descriptor lookup by digest, semantic role check (incl. non-null
@@ -204,6 +204,23 @@ JCS-canonical I-JSON per warrant SPEC §4; closed schemas; one type tag.
 - ▲ **`global_issues[]`** carries store- and settlement-level problems that
   belong to no single source file (invalid threshold policy, unverified
   genesis, missing jurisdiction root).
+- ▲ **Absence of evidence is not evidence (rev 13).** The composed verdict
+  REQUIRES an evidence resolver; `cas = None` is `CAS_REQUIRED`, never a
+  clean result. Every identity-bearing check — WarrantID re-derivation,
+  envelope signature and reason completeness, the semantic reason binding —
+  is byte-derived, so without a store a clean verdict means "nothing could
+  be checked" while reading as "verified": a resealed record whose body
+  changed, with stale WarrantIDs in the receipt, passed and was projected.
+  A shape-only inspection remains available under a **different name**
+  (`validate_structure_only`) whose result cannot be mistaken for
+  verification. Consumers inherit the rule: the projector refuses before
+  projecting when no resolver is supplied.
+- ▲ **A reused output sink is cleared before publication (rev 13)**, so a
+  refused verdict cannot leave an earlier successful view behind.
+- ▲ **The failure path never re-executes hostile code (rev 13):** no
+  `repr()` of an attacker-supplied exception, and only exact `bytes` /
+  `bytearray` are accepted from a resolver — a subclass can override
+  `__bytes__`.
 - ▲ **Diagnostics never change a verdict (rev 12).** A verifier's optional
   output — the validated view, a report sink, anything a caller may or may
   not ask for — MUST be a pure output. Making the input freeze and the
