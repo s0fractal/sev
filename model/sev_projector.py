@@ -124,6 +124,14 @@ def iri_reason(wid, ptr, reason_digest):
         wid.encode() + b"\x00" + ptr.encode() + b"\x00" + reason_digest.encode())
 
 
+def iri_assessment(core_digest, wid, ptr, reason_digest):
+    """What one receipt says about executing one reason — an Entity. Present
+    for every outcome, including the ones where nothing ran."""
+    return "urn:sev:assess:" + sm.sha256_hex(
+        core_digest.encode("ascii") + b"\x00" + wid.encode() + b"\x00"
+        + ptr.encode() + b"\x00" + reason_digest.encode())
+
+
 def iri_run(core_digest, wid, ptr, reason_digest, semantics_digest):
     """One EXECUTION of that reason. Two receipts re-running the same reason
     under different semantics are two runs; keying only on the reason made
@@ -288,28 +296,44 @@ def project(snapshot, receipt, cas) -> tuple:
                 if check_present:
                     g.add(reason_node, WRT + "checkBlob", _iri(iri_blob(check_blob)))
 
+            # What the receipt SAYS about executing this reason — an Entity,
+            # never an Activity. `not-applicable` and `unverified` mean no
+            # execution happened; emitting a CheckRun for them (and with it
+            # prov:used / prov:wasInformedBy, whose PROV domain is Activity)
+            # made the graph assert a run under entailment — the exact
+            # "re-ran ≠ was not executed" collapse warrant SPEC §7 forbids.
+            assess = iri_assessment(core_digest, wid, reason["ptr"],
+                                    reason["reason_digest"])
+            emitted_kinds.add("execution-assessment")
+            g.add(assess, RDF_TYPE, _iri(SEV + "ExecutionAssessment"), vgraph)
+            g.add(assess, SEV + "assesses", _iri(reason_node), vgraph)
+            g.add(assess, SEV + "receiptCoreDigest", _lit(core_digest), vgraph)
+            g.add(assess, SIGMA + "reExecution", _lit(o["re_execution"]), vgraph)
+            if o["re_execution"] == "unverified":
+                unverified += 1
+                g.add(assess, SIGMA + "failureCode", _lit(o["failure_code"]), vgraph)
+
+            if o["re_execution"] not in ("matched", "mismatched"):
+                continue        # nothing ran: no Activity, no PROV relations
+
             run = iri_run(core_digest, wid, reason["ptr"],
                           reason["reason_digest"], sem)
             emitted_kinds.add("check-run")
             g.add(run, RDF_TYPE, _iri(SIGMA + "CheckRun"), vgraph)
+            g.add(assess, SEV + "executedAs", _iri(run), vgraph)
             g.add(run, PROV + "used", _iri(reason_node), vgraph)
-            if check_blob and check_present and o["re_execution"] in (
-                    "matched", "mismatched"):
+            if check_blob and check_present:
                 g.add(run, PROV + "used", _iri(iri_blob(check_blob)), vgraph)
             if sem:
                 g.add(run, SIGMA + "semanticsDigest", _lit(sem), vgraph)
             g.add(run, SEV + "receiptCoreDigest", _lit(core_digest), vgraph)
             g.add(run, SIGMA + "reExecution", _lit(o["re_execution"]), vgraph)
             g.add(run, PROV + "wasInformedBy", _iri(rec), vgraph)
-            if o["re_execution"] in ("matched", "mismatched"):
-                g.add(run, SIGMA + "observedVerdict", _lit(o["observed_verdict"]), vgraph)
-                g.add(run, SIGMA + "atpSpent", _lit(o["atp_spent"]), vgraph)
-                if rt == "ski@v1":
-                    g.add(run, PROV + "generated",
-                          _iri("urn:sigma:node:" + o["observed_result"]), vgraph)
-            if o["re_execution"] == "unverified":
-                unverified += 1
-                g.add(run, SIGMA + "failureCode", _lit(o["failure_code"]), vgraph)
+            g.add(run, SIGMA + "observedVerdict", _lit(o["observed_verdict"]), vgraph)
+            g.add(run, SIGMA + "atpSpent", _lit(o["atp_spent"]), vgraph)
+            if rt == "ski@v1":
+                g.add(run, PROV + "generated",
+                      _iri("urn:sigma:node:" + o["observed_result"]), vgraph)
 
     nquads = g.nquads()
     tool = _tool_digest()
@@ -1256,12 +1280,14 @@ def run_vectors():
     receiptM["core"]["execution_policy"]["runtimes"] = []
     resM, fM = project(snapM, receiptM, casM)
     sm.check_equal("a run with no declared semantics still validates", fM, [])
-    sm.check_equal("its IRI hashes an empty semantics field, not 'None'",
-                   {ln.split(" ")[0] for ln in resM["nquads"].decode().splitlines()
-                    if "sigma#CheckRun" in ln},
-                   {"<" + iri_run(sm.sha256_hex(sm.jcs(resM and receiptM["core"])),
-                                  srcM["computed_wid"], "/because/0",
-                                  srcM["reasons"][0]["reason_digest"], None) + ">"})
+    sm.check_true("an unverified outcome yields an assessment, not a run",
+                  lambda: b"sev#ExecutionAssessment" in resM["nquads"]
+                  and b"sigma#CheckRun" not in resM["nquads"])
+    sm.check_true("...and no PROV execution relation hangs off it",
+                  lambda: not any(
+                      p in resM["nquads"].decode()
+                      for p in ("prov#used", "prov#wasInformedBy",
+                                "prov#generated")))
 
     # re-gate: an input that cannot be detached must be REFUSED, not shared.
     # The old freeze fell back to the caller's object on a copy failure, so
@@ -1675,6 +1701,78 @@ def run_vectors():
     sm.check_equal("malformed extra signature as ERR is accepted", fX3, [])
     sm.check_true("...and the record is excluded",
                   lambda: resX2["view_manifest"]["sources_excluded"] == 1)
+
+    # re-gate: an outcome where nothing ran must not become an Activity
+    snUP, rcUP, csUP = fixture()          # upstream cmd@v1 / not-applicable
+    resUP, fUP = project(snUP, rcUP, csUP)
+    nqUP = resUP["nquads"].decode()
+    sm.check_equal("the upstream not-applicable record projects cleanly", fUP, [])
+    sm.check_true("not-applicable yields an assessment and NO CheckRun",
+                  lambda: "sev#ExecutionAssessment" in nqUP
+                  and "sigma#CheckRun" not in nqUP)
+    sm.check_true("...no coverage claim of a check-run, no L-REEXEC",
+                  lambda: "check-run" not in resUP["view_manifest"]["coverage"]["emitted"]
+                  and "L-REEXEC" not in [e["code"] for e in
+                                         resUP["loss_manifest"]["entries"]])
+
+    # independent entailment guard: PROV predicates whose domain is an
+    # Activity may only have CheckRun subjects — checked by parsing the
+    # output back, not by trusting the emitter
+    ACTIVITY_DOMAIN = ("prov#used", "prov#wasInformedBy", "prov#generated",
+                       "prov#wasAssociatedWith")
+
+    def _activity_subjects_are_runs(nquads):
+        runs, offenders = set(), set()
+        for line in nquads.decode().splitlines():
+            parts = line.split(" ")
+            if len(parts) < 3:
+                continue
+            subj, pred = parts[0], parts[1]
+            if "22-rdf-syntax-ns#type" in pred and "sigma#CheckRun" in line:
+                runs.add(subj)
+        for line in nquads.decode().splitlines():
+            parts = line.split(" ")
+            if len(parts) < 3:
+                continue
+            subj, pred = parts[0], parts[1]
+            if any(a in pred for a in ACTIVITY_DOMAIN) and subj not in runs:
+                offenders.add((subj, pred))
+        return offenders
+
+    for label, res_ in [("upstream not-applicable", resUP),
+                        ("ski matched", result),
+                        ("ski unverified", resM)]:
+        sm.check_equal("entailment guard (%s): no non-run in an Activity "
+                       "position" % label,
+                       _activity_subjects_are_runs(res_["nquads"]), set())
+
+    # matched and mismatched DO produce a run, with its execution inputs
+    sm.check_true("a matched ski@v1 outcome produces a CheckRun with prov:used",
+                  lambda: b"sigma#CheckRun" in result["nquads"]
+                  and b"prov#used" in result["nquads"])
+    snMM, rcMM, csMM = ski_fixture()
+    srcMM = [x for x in rcMM["core"]["sources"] if x["kind"] == "record"][0]
+    srcMM["reasons"][0]["outcome"].update(re_execution="mismatched",
+                                          observed_verdict="fail")
+    srcMM["issues"] = sorted(srcMM["issues"] + [
+        {"code": "REASON_MISMATCH", "severity": "WARN",
+         "at": {"kind": "json-pointer", "value": "/because/0"}}],
+        key=lambda x: sm.jcs(x))
+    rcMM["core"].update(warnings=rcMM["core"]["warnings"] + 1)
+    resMM, fMM = project(snMM, rcMM, csMM)
+    sm.check_true("a mismatched outcome also produces a CheckRun",
+                  lambda: fMM == [] and b"sigma#CheckRun" in resMM["nquads"])
+
+    # switching not-applicable -> matched must change topology, not just a
+    # literal: new node type, new coverage category, new loss code
+    sm.check_true("not-applicable vs matched differ in topology, coverage and "
+                  "losses",
+                  lambda: ("sigma#CheckRun" not in nqUP)
+                  and (b"sigma#CheckRun" in result["nquads"])
+                  and ("check-run" not in
+                       resUP["view_manifest"]["coverage"]["emitted"])
+                  and ("check-run" in
+                       result["view_manifest"]["coverage"]["emitted"]))
 
     # provenance of the vendored fixture is mechanically checked: the bytes,
     # the constant and the digest recorded in the README must agree. No

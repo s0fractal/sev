@@ -528,6 +528,18 @@ reproduced countervector:
   `sev:sourceKind` and `sev:entryDigest`. Counting a member as projected
   while emitting nothing for it is the same silent-truncation class on the
   other branch of the union.
+- **An outcome where nothing ran is not an Activity.** Every reason gets an
+  `sev:ExecutionAssessment` — an **Entity** recording what the receipt says
+  about executing it (`sigma:reExecution`, `sigma:failureCode`,
+  `sev:receiptCoreDigest`, `sev:assesses` the reason). A `sigma:CheckRun`,
+  and with it any PROV predicate whose domain is an Activity
+  (`prov:used`, `prov:wasInformedBy`, `prov:generated`), is emitted **only**
+  for `matched`/`mismatched`. Emitting a run for `not-applicable` or
+  `unverified` made the graph assert an execution under entailment even
+  without an explicit `rdf:type prov:Activity` — precisely the
+  "re-ran ≠ was not executed" collapse warrant SPEC §7 forbids. Coverage
+  lists `check-run` and the manifest carries `L-REEXEC` only when a run was
+  actually emitted.
 - **A reason is not an execution of it.** `urn:wrt:reason:<sha256(wid ‖ ptr ‖
   reason_digest)>` is a stable fact of the record; `urn:sigma:run:<sha256(
   receipt_core_digest ‖ wid ‖ ptr ‖ reason_digest ‖ semantics_digest)>` is
