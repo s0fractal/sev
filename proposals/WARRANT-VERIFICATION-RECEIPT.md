@@ -6,7 +6,7 @@
 > a normative copy and instead pins the Warrant artifact/version/digest, and
 > this document remains here as provenance, marked superseded.
 
-**Status:** PROPOSAL SKETCH **rev 11** (2026-08-10), design-only, not filed.
+**Status:** PROPOSAL SKETCH **rev 12** (2026-08-10), design-only, not filed.
 Rev 5 (fifth Codex review, AMEND — compositional layer): the public verdict
 is now **`validate_warrant_receipt(snapshot, receipt, cas)`** in the model —
 descriptor lookup by digest, semantic role check (incl. non-null
@@ -204,6 +204,20 @@ JCS-canonical I-JSON per warrant SPEC §4; closed schemas; one type tag.
 - ▲ **`global_issues[]`** carries store- and settlement-level problems that
   belong to no single source file (invalid threshold policy, unverified
   genesis, missing jurisdiction root).
+- ▲ **Diagnostics never change a verdict (rev 12).** A verifier's optional
+  output — the validated view, a report sink, anything a caller may or may
+  not ask for — MUST be a pure output. Making the input freeze and the
+  committed-reason derivation conditional on the caller supplying a sink
+  meant the same public validator judged different objects depending on
+  whether diagnostics were requested: without a sink an impossible
+  `matched` over an absent check blob was accepted, and input isolation was
+  skipped entirely. The verdict is computed over an unconditional internal
+  view; the external sink receives a copy afterwards and is never read
+  during judging. Conformance: `view=None`, `view={}` and a populated sink
+  MUST yield identical findings.
+- ▲ **The CAS boundary is bounded (rev 12).** A resolver is external code.
+  A missing key stays a `KeyError`; a raising resolver or a non-bytes value
+  becomes a `SealViolation`, never a host exception escaping the validator.
 - ▲ **A receipt may not contradict its own negative claims (rev 11).** If a
   receipt reports **no** signature with `valid: true` whose `actor` equals
   the committed `body.actor.id`, it MUST carry an ERR

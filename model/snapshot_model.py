@@ -323,7 +323,19 @@ def verify_bundle_root(obj) -> bool:
 
 
 def cas_resolve(store, digest):
-    data = store[digest]
+    """Bounded at the CAS boundary: a resolver is external code and may fail
+    in ordinary ways. A missing key stays a KeyError (callers already handle
+    it); anything else — a raising resolver, a non-bytes value — becomes a
+    SealViolation rather than escaping the validator as a host exception."""
+    try:
+        data = store[digest]
+    except KeyError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — external resolver, bounded here
+        raise SealViolation("CAS_RESOLVER_FAILED", repr(exc))
+    if not isinstance(data, (bytes, bytearray)):
+        raise SealViolation("CAS_NOT_BYTES", type(data).__name__)
+    data = bytes(data)
     if sha256_hex(data) != digest:
         raise SealViolation("CAS_DIGEST_MISMATCH", digest)
     return data
@@ -1202,23 +1214,35 @@ def validate_warrant_receipt(snapshot, receipt, cas=None, expected_version="0.4"
                              view=None) -> list:
     """THE public verdict tying receipt to snapshot: descriptor lookup, role
     check, exact universe<->sources bijection, per-source digests, then the
-    internal core invariants. Total over any parsed JSON values."""
-    # Freeze the inputs BEFORE judging them. A caller whose objects change
-    # between reads could otherwise show the validator a clean core and the
-    # projector another one — the CAS TOCTOU was closed one round earlier,
-    # this is the same seam on receipt and snapshot (re-gate P1-1).
+    internal core invariants. Total over any parsed JSON values.
+
+    `view` is an OUTPUT SINK ONLY. It receives a copy of the validated view
+    after the verdict and is never read during it: making the freeze and the
+    committed-reason derivation conditional on it let a caller change the
+    verdict by asking (or not asking) for diagnostics — with `view=None` an
+    impossible `matched` over a missing check blob was accepted, and the
+    input isolation was skipped entirely (core re-gate P1).
+    """
+    internal = {}
+    findings = _verdict(snapshot, receipt, cas, expected_version, internal)
     if view is not None:
-        try:
-            frozen_snapshot = _freeze(snapshot)
-            frozen_receipt = _freeze(receipt)
-        except (_NotFreezable, RecursionError):
-            # Fail closed: an input that cannot be detached is refused, never
-            # judged-then-shared. The view stays empty, so no consumer can
-            # mistake a partial freeze for a validated one.
-            return [{"code": "INPUT_NOT_FREEZABLE", "severity": "ERR", "at": "/"}]
-        snapshot, receipt = frozen_snapshot, frozen_receipt
-        view["snapshot"] = snapshot
-        view["receipt"] = receipt
+        view.update(internal)
+    return findings
+
+
+def _verdict(snapshot, receipt, cas, expected_version, view) -> list:
+    # Freeze the inputs BEFORE judging them, unconditionally.
+    try:
+        snapshot = _freeze(snapshot)
+        receipt = _freeze(receipt)
+    except (_NotFreezable, RecursionError):
+        # Fail closed: an input that cannot be detached is refused, never
+        # judged-then-shared. The view stays empty, so no consumer can
+        # mistake a partial freeze for a validated one.
+        view.clear()
+        return [{"code": "INPUT_NOT_FREEZABLE", "severity": "ERR", "at": "/"}]
+    view["snapshot"] = snapshot
+    view["receipt"] = receipt
 
     f = list(validate_snapshot(snapshot, cas))
     if not isinstance(receipt, dict):
@@ -1245,9 +1269,8 @@ def validate_warrant_receipt(snapshot, receipt, cas=None, expected_version="0.4"
         _f(f, "RECEIPT_DESCRIPTOR_MISSING", "/core/subroot_descriptor_digest")
         return f
     descriptor = {k: v for k, v in wrapper.items() if k != "digest"}
-    if view is not None:
-        view["descriptor"] = descriptor
-        view["core"] = core
+    view["descriptor"] = descriptor
+    view["core"] = core
     f.extend(validate_warrant_descriptor_role(descriptor, expected_version))
 
     universe = descriptor.get("universe")
@@ -1306,7 +1329,7 @@ def validate_warrant_receipt(snapshot, receipt, cas=None, expected_version="0.4"
     # "could not run" observationally distinct. Claiming matched/mismatched
     # over a blob absent from this subroot is an impossible verdict.
     present = available_blob_digests(core)
-    committed_by_path = (view or {}).get("committed", {})
+    committed_by_path = view.get("committed", {})
     for s in core.get("sources", []) if isinstance(core.get("sources"), list) else []:
         if not (isinstance(s, dict) and s.get("kind") == "record"):
             continue
@@ -1658,6 +1681,55 @@ def run_vectors():
                      .update(reason_digest="9" * 64))
     check_has("wrong reason digest -> REASON_DIGEST_MISMATCH",
               validate_warrant_receipt(snap, baddig, cas), "REASON_DIGEST_MISMATCH")
+    # the output sink must never change the verdict
+    def _sinks_agree(sn, rc, cs):
+        a = [x["code"] for x in validate_warrant_receipt(sn, rc, cs)]
+        b = [x["code"] for x in validate_warrant_receipt(sn, rc, cs, view={})]
+        sink = {}
+        c = [x["code"] for x in validate_warrant_receipt(sn, rc, cs, view=sink)]
+        return a == b == c
+    check_true("view=None, view={} and a populated sink agree",
+               lambda: _sinks_agree(snap, receipt, cas))
+    # the case that actually exposed the defect: a matched reason whose
+    # check blob is absent — decided only by the committed-reason derivation
+    no_blob = _mutate(receipt, lambda r: r["core"]["sources"].pop(0))
+    check_true("...including where the check-blob binding decides the verdict",
+               lambda: _sinks_agree(snap, no_blob, cas)
+               and any(x["code"] == "CHECK_BLOB_ABSENT"
+                       for x in validate_warrant_receipt(snap, no_blob, cas)))
+
+    # the freeze is unconditional — the model suite must prove it too, not
+    # only the projector's TOCTOU vectors
+    class UncopyableReceipt(dict):
+        def __deepcopy__(self, memo):
+            raise RuntimeError("refuses to be copied")
+    check_equal("an uncopyable receipt is refused with no sink at all",
+                [x["code"] for x in
+                 validate_warrant_receipt(snap, UncopyableReceipt(receipt), cas)],
+                ["INPUT_NOT_FREEZABLE"])
+    check_equal("...and identically with a sink",
+                [x["code"] for x in
+                 validate_warrant_receipt(snap, UncopyableReceipt(receipt), cas,
+                                          view={})],
+                ["INPUT_NOT_FREEZABLE"])
+
+    # the CAS boundary is bounded: a hostile resolver yields findings, not
+    # host exceptions
+    class RaisingCAS(dict):
+        def __getitem__(self, k):
+            raise RuntimeError("resolver failed")
+
+    class StringCAS(dict):
+        def __getitem__(self, k):
+            return "not bytes"
+
+    for label, store in [("a raising resolver", RaisingCAS(cas)),
+                         ("a non-bytes value", StringCAS(cas))]:
+        check_true("CAS boundary bounded: %s" % label,
+                   lambda store=store: all(
+                       isinstance(x, dict) for x in
+                       validate_warrant_receipt(snap, receipt, store)))
+
     swapped = _mutate(receipt, lambda r: r["core"]["sources"][1]["reasons"][0]
                       .update(runtime="evil@v1"))
     check_has("runtime swapped over committed ski@v1 reason -> REASON_ROLE_MISMATCH",

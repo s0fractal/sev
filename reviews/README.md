@@ -43,3 +43,4 @@ round without a SHA is invalid.
 | 6t | 2026-08-10 | Codex | AMEND | `0050042` |
 | 6u | 2026-08-10 | Codex | AMEND | `4c2bfea` |
 | 6v | 2026-08-10 | Codex | AMEND (target profile only; core + MVP clean) | `b9cd539` |
+| 6w | 2026-08-10 | Codex | AMEND (core only; MVP + profile not reviewed) | `8887085` |
