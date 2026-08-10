@@ -1965,6 +1965,103 @@ def run_vectors():
                   lambda: ("disjoint", "activity+entity", "urn:x")
                   in _prov_violations(_both))
 
+    # round 10: the envelope's top-level shape is derived, not assumed —
+    # and the attack lands on genuinely pretty-printed bytes, the same form
+    # every real Warrant store uses
+    import json as _json
+
+    def _envelope_record(extra=None, ack=None, wid=None, sound=False):
+        env = _json.loads(open(UPSTREAM_ACCEPT, "rb").read())
+        if extra:
+            env.update(extra)
+        raw = _json.dumps(env, indent=2, sort_keys=True).encode() + b"\n"
+        path = ".warrants/records/%s.json" % ("c" * 64)
+        files = {path: raw, ".warrants/blobs/p": b"policy"}
+        cs = {sm.sha256_hex(v): v for v in files.values()}
+        un = sm.seal_universe(files)
+        dd = sm.subroot_descriptor("warrant",
+                                   {"name": "warrant", "version": "0.4",
+                                    "spec_digest": sm.sha256_hex(b"spec")},
+                                   ".warrants/", un)
+        sn = sm.snapshot_object([dd], [])
+        bp = {e["path"]: e["sha256"] for e in un}
+        issues = ([{"code": ack, "severity": "ERR",
+                    "at": {"kind": "path", "value": path}}] if ack else [])
+        srcs = sorted([
+            {"kind": "blob", "path": ".warrants/blobs/p",
+             "entry_digest": bp[".warrants/blobs/p"], "loaded": True, "issues": []},
+            {"kind": "record", "path": path, "entry_digest": bp[path],
+             "loaded": True, "claimed_wid": "c" * 64, "computed_wid": wid,
+             "id_sound": sound, "settlement": [], "signatures": [],
+             "issues": issues, "reasons": []}],
+            key=lambda x: (sm.path_sort_key(x["path"]), x["entry_digest"]))
+        cr = {"subroot_descriptor_digest": sm.subroot_descriptor_digest(dd),
+              "grade": "base", "trust_config_digest": None,
+              "execution_policy": {"runtimes": []},
+              "ok": not issues, "errors": len(issues), "warnings": 0,
+              "global_issues": [], "sources": srcs}
+        return sn, {"receipt": "warrant.verification-receipt@v0", "core": cr,
+                    "producer": {"impl": "x", "artifact_digest": None,
+                                 "spec": "0.4", "report_digest": "f" * 64,
+                                 "local_notes": []}}, cs
+
+    snX1, rcX1, csX1 = _envelope_record(extra={"attacker_extra": 1})
+    resX1, fX1 = project(snX1, rcX1, csX1)
+    sm.check_true("a pretty-printed envelope with an extra member is refused",
+                  lambda: resX1 is None and any(
+                      x["code"] == "MALFORMED_ENVELOPE_UNREPORTED" for x in fX1))
+
+    snX2, rcX2, csX2 = _envelope_record(extra={"attacker_extra": 1},
+                                        ack="MALFORMED_ENVELOPE")
+    resX2, fX2 = project(snX2, rcX2, csX2)
+    sm.check_equal("...acknowledged, it is valid negative evidence", fX2, [])
+    sm.check_true("...and the record is excluded, never a graph node",
+                  lambda: resX2["view_manifest"]["sources_excluded"] == 1
+                  and b"urn:wrt:record:" not in resX2["nquads"])
+
+    snX3, rcX3, csX3 = _envelope_record(ack="MALFORMED_ENVELOPE")
+    resX3, fX3 = project(snX3, rcX3, csX3)
+    sm.check_true("claiming a malformed envelope over a sound one is refused",
+                  lambda: resX3 is None and any(
+                      x["code"] == "SPURIOUS_MALFORMED_ENVELOPE" for x in fX3))
+
+    snX4, rcX4, csX4 = _envelope_record(extra={"attacker_extra": 1},
+                                        ack="MALFORMED_ENVELOPE",
+                                        wid="d" * 64)
+    resX4, fX4 = project(snX4, rcX4, csX4)
+    sm.check_true("a refused envelope may not carry an identity claim",
+                  lambda: resX4 is None and any(
+                      x["code"] == "UNREADABLE_WITH_IDENTITY_CLAIM" for x in fX4))
+
+    for missing in ("body", "sigs"):
+        env_missing = {"body": {}, "sigs": []}
+        del env_missing[missing]
+        snX5, rcX5, csX5 = _envelope_record(extra=None)
+        # rebuild with the member removed rather than added
+        import copy as _copy
+        raw5 = _json.dumps(env_missing, indent=2, sort_keys=True).encode() + b"\n"
+        path5 = ".warrants/records/%s.json" % ("c" * 64)
+        files5 = {path5: raw5, ".warrants/blobs/p": b"policy"}
+        cs5 = {sm.sha256_hex(v): v for v in files5.values()}
+        un5 = sm.seal_universe(files5)
+        dd5 = sm.subroot_descriptor("warrant",
+                                    {"name": "warrant", "version": "0.4",
+                                     "spec_digest": sm.sha256_hex(b"spec")},
+                                    ".warrants/", un5)
+        sn5 = sm.snapshot_object([dd5], [])
+        bp5 = {e["path"]: e["sha256"] for e in un5}
+        src5 = _copy.deepcopy(rcX5["core"]["sources"])
+        for x in src5:
+            x["entry_digest"] = bp5[x["path"]]
+        rc5 = _copy.deepcopy(rcX5)
+        rc5["core"].update(subroot_descriptor_digest=sm.subroot_descriptor_digest(dd5),
+                           sources=sorted(src5, key=lambda x: (
+                               sm.path_sort_key(x["path"]), x["entry_digest"])))
+        res5, f5 = project(sn5, rc5, cs5)
+        sm.check_true("an envelope missing `%s` is refused" % missing,
+                      lambda f5=f5, res5=res5: res5 is None and any(
+                          x["code"] == "MALFORMED_ENVELOPE_UNREPORTED" for x in f5))
+
     # round 9: a strict-parser finding must not be discarded — but envelope
     # canonicality is NOT one of Warrant's requirements
     _up_raw = open(UPSTREAM_ACCEPT, "rb").read()

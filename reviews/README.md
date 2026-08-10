@@ -51,3 +51,4 @@ round without a SHA is invalid.
 | 7-re | 2026-08-10 | Kimi | zero P1; one P2 residue (stale-count guard blind to hyphens) | `6fbe3af` |
 | 8 | 2026-08-10 | Codex (+ Kimi concurring) | snapshot §7 **APPROVE for freeze**; receipt core AMEND — 1 P1 | `7935400` |
 | 9 | 2026-08-10 | Codex | AMEND — 1 P1; **partial disagreement filed**: structural half fixed, prescriptive half disputed with SPEC citations | `21ee454` |
+| 10 | 2026-08-10 | Codex | AMEND — 1 P1 (envelope schema); round-9 disagreement **resolved in the repo's favour** — reviewer withdrew the canonical-envelope demand | `598b60d` |

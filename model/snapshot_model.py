@@ -1139,8 +1139,26 @@ def _resolve_record(f, cas, src, at, issues):
     # take that path.
     fatal = [x for x in _pf if x["code"] != "NOT_CANONICAL"]
     parsed_ok = isinstance(obj, dict) and not fatal
+    # Warrant's own verifier enforces the top-level shape outright —
+    # `if set(env) != {"body", "sigs"}: ERR envelope must be {body, sigs}`
+    # (impl/warrant.py:1271). Deriving readability from decodability alone
+    # let a pretty-printed envelope carrying an attacker-controlled extra
+    # member become an evidence node here while that verifier rejects it
+    # (round 10). The shape is derived, then joined with acknowledgement
+    # exactly like a parse failure.
+    envelope_ok = parsed_ok and set(obj.keys()) == {"body", "sigs"}
     acknowledged = any(x["code"] == "RECORD_UNREADABLE" and x["severity"] == "ERR"
                        for x in issues)
+    envelope_acked = any(x["code"] == "MALFORMED_ENVELOPE" and x["severity"] == "ERR"
+                         for x in issues)
+    if parsed_ok and not envelope_ok:
+        if not envelope_acked:
+            _f(f, "MALFORMED_ENVELOPE_UNREPORTED", at)
+        elif src.get("computed_wid") is not None or src.get("id_sound") is not False:
+            _f(f, "UNREADABLE_WITH_IDENTITY_CLAIM", at)
+        return None
+    if envelope_ok and envelope_acked:
+        _f(f, "SPURIOUS_MALFORMED_ENVELOPE", at)
     if not parsed_ok:
         if not acknowledged:
             _f(f, "RECORD_UNREADABLE_UNREPORTED", at)
