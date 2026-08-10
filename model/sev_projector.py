@@ -1730,26 +1730,65 @@ def run_vectors():
     # disjoint; and the Agent branch and literal objects were never checked
     # at all (re-gate P1).
     PROV_NS = "http://www.w3.org/ns/prov#"
+    OAIP_NS = "https://github.com/s0fractal/oaip/ns#"
+    BOS_NS = "https://s0fractal.dev/ns/bos#"
     RDF_TYPE_IRI = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
-    TYPE_REGISTRY = {
-        PROV_NS + "Activity": "activity",
-        "https://s0fractal.dev/ns/sigma#CheckRun": "activity",
-        "https://s0fractal.dev/ns/wrt#Filing": "activity",
-        "https://s0fractal.dev/ns/sev#VerificationActivity": "activity",
-        PROV_NS + "Entity": "entity",
-        PROV_NS + "Bundle": "entity",
-        PROV_NS + "Plan": "entity",
-        "https://s0fractal.dev/ns/wrt#Warrant": "entity",
-        "https://s0fractal.dev/ns/wrt#Reason": "entity",
-        "https://s0fractal.dev/ns/wrt#Signature": "entity",
-        "https://s0fractal.dev/ns/sev#Source": "entity",
-        "https://s0fractal.dev/ns/sev#ExecutionAssessment": "entity",
-        "https://s0fractal.dev/ns/sev#VerificationReceipt": "entity",
-        PROV_NS + "Agent": "agent",
-        PROV_NS + "Person": "agent",
-        PROV_NS + "SoftwareAgent": "agent",
-        PROV_NS + "Organization": "agent",
+
+    # A single machine-readable class hierarchy for the WHOLE target profile,
+    # not a hand-kept membership list. Maintaining the latter produced both a
+    # false negative (a node typed Activity AND Entity satisfied an Entity
+    # position, though PROV declares them disjoint) and false positives
+    # (valid target graphs using oaip:Execution, oaip:Validation,
+    # bos:Trajectory or wrt:Adjudication were rejected). Class -> parent;
+    # roots carry the three disjoint PROV kinds.
+    ROOT_KINDS = {PROV_NS + "Activity": "activity",
+                  PROV_NS + "Entity": "entity",
+                  PROV_NS + "Agent": "agent"}
+    PROFILE_CLASSES = {
+        PROV_NS + "Activity": None,
+        PROV_NS + "Entity": None,
+        PROV_NS + "Agent": None,
+        # activities
+        "https://s0fractal.dev/ns/sigma#CheckRun": PROV_NS + "Activity",
+        "https://s0fractal.dev/ns/wrt#Filing": PROV_NS + "Activity",
+        "https://s0fractal.dev/ns/wrt#Adjudication":
+            "https://s0fractal.dev/ns/wrt#Filing",
+        "https://s0fractal.dev/ns/sev#VerificationActivity": PROV_NS + "Activity",
+        OAIP_NS + "Execution": PROV_NS + "Activity",
+        OAIP_NS + "Validation": PROV_NS + "Activity",
+        BOS_NS + "Trajectory": PROV_NS + "Activity",
+        # entities
+        PROV_NS + "Bundle": PROV_NS + "Entity",
+        PROV_NS + "Plan": PROV_NS + "Entity",
+        "https://s0fractal.dev/ns/wrt#Warrant": PROV_NS + "Entity",
+        "https://s0fractal.dev/ns/wrt#Reason": PROV_NS + "Entity",
+        "https://s0fractal.dev/ns/wrt#Signature": PROV_NS + "Entity",
+        "https://s0fractal.dev/ns/sev#Source": PROV_NS + "Entity",
+        "https://s0fractal.dev/ns/sev#ExecutionAssessment": PROV_NS + "Entity",
+        "https://s0fractal.dev/ns/sev#VerificationReceipt": PROV_NS + "Entity",
+        OAIP_NS + "Intent": PROV_NS + "Entity",
+        OAIP_NS + "ClaimCandidate": PROV_NS + "Entity",
+        BOS_NS + "Assessment": PROV_NS + "Entity",
+        BOS_NS + "ContextCut": PROV_NS + "Entity",
+        BOS_NS + "RelationClaim": PROV_NS + "Entity",
+        # agents
+        PROV_NS + "Person": PROV_NS + "Agent",
+        PROV_NS + "SoftwareAgent": PROV_NS + "Agent",
+        PROV_NS + "Organization": PROV_NS + "Agent",
     }
+
+    def _kind_of_class(cls):
+        """Transitive closure to a root kind; None for unknown classes."""
+        seen, cur = set(), cls
+        while cur in PROFILE_CLASSES and cur not in seen:
+            if cur in ROOT_KINDS:
+                return ROOT_KINDS[cur]
+            seen.add(cur)
+            cur = PROFILE_CLASSES[cur]
+            if cur is None:
+                return None
+        return None
+
     PROV_SIGNATURES = {
         PROV_NS + "used":              ("activity", "entity"),
         PROV_NS + "wasInformedBy":     ("activity", "activity"),
@@ -1768,8 +1807,7 @@ def run_vectors():
         Unisolatable by a behavioural vector today, and labelled rather than
         counted: N-Quads always has an IRI subject and predicate, so a naive
         space split misreads only the *content* of a spaced literal, never
-        its IRI-vs-literal classification — the verdicts coincide on every
-        shape this profile emits. It is kept because that coincidence is a
+        its IRI-vs-literal classification. Kept because that coincidence is a
         property of the current signature set, not of the format.
         """
         out = []
@@ -1786,8 +1824,17 @@ def run_vectors():
         kinds = {}
         for terms in quads:
             (subj, s_iri), (pred, _p), (obj, o_iri) = terms[0], terms[1], terms[2]
-            if s_iri and pred == RDF_TYPE_IRI and o_iri and obj in TYPE_REGISTRY:
-                kinds.setdefault(subj, set()).add(TYPE_REGISTRY[obj])
+            if s_iri and pred == RDF_TYPE_IRI and o_iri:
+                kind = _kind_of_class(obj)
+                if kind:
+                    kinds.setdefault(subj, set()).add(kind)
+
+        bad = set()
+        # disjointness is decided FIRST, over the closure — a forbidden kind
+        # must not be excused by a permitted one being present too
+        for node, have in kinds.items():
+            if len(have) > 1:
+                bad.add(("disjoint", "+".join(sorted(have)), node))
 
         def _bad(node, is_iri, want):
             if not is_iri:
@@ -1795,9 +1842,8 @@ def run_vectors():
             have = kinds.get(node, set())
             if not have:
                 return want != "entity"        # untyped nodes are Entities
-            return want not in have            # disjoint classes: no overlap
+            return have != {want}              # exactly the wanted kind
 
-        bad = set()
         for terms in quads:
             (subj, s_iri), (pred, _p), (obj, o_iri) = terms[0], terms[1], terms[2]
             sig = PROV_SIGNATURES.get(pred)
@@ -1888,6 +1934,42 @@ def run_vectors():
         '"a b c" .')
     sm.check_equal("a literal containing spaces parses as one term",
                    _prov_violations(_spaced_literal), set())
+
+    # disjointness is decided over the closure, not by membership
+    _both = _nq(
+        "<urn:x> %s <http://www.w3.org/ns/prov#Activity> ." % T,
+        "<urn:x> %s <http://www.w3.org/ns/prov#Entity> ." % T,
+        "<urn:sigma:run:a> %s <https://s0fractal.dev/ns/sigma#CheckRun> ." % T,
+        "<urn:sigma:run:a> <http://www.w3.org/ns/prov#used> <urn:x> .")
+    sm.check_true("a node typed Activity AND Entity is rejected outright",
+                  lambda: any(v[0] == "disjoint" for v in _prov_violations(_both))
+                  and any(v[0] == "object" for v in _prov_violations(_both)))
+
+    # every Activity subclass the TARGET profile declares passes in its own
+    # position — the previous hand-kept list produced false positives here
+    for cls in ("https://github.com/s0fractal/oaip/ns#Execution",
+                "https://github.com/s0fractal/oaip/ns#Validation",
+                "https://s0fractal.dev/ns/bos#Trajectory",
+                "https://s0fractal.dev/ns/wrt#Adjudication"):
+        graph = _nq("<urn:act> %s <%s> ." % (T, cls),
+                    "<urn:act> <http://www.w3.org/ns/prov#used> <urn:ent> .")
+        sm.check_equal("target Activity subclass %s is accepted"
+                       % cls.rsplit("#", 1)[-1],
+                       _prov_violations(graph), set())
+
+    # ...and a transitive subclass really resolves through its parent
+    sm.check_equal("wrt:Adjudication closes to activity via wrt:Filing",
+                   _kind_of_class("https://s0fractal.dev/ns/wrt#Adjudication"),
+                   "activity")
+
+    # the MVP guard vs the profile guard: everything this projector emits
+    # must be a class the registry knows
+    _emitted_types = {terms[2][0] for terms in
+                      _parse_nquads(result["nquads"])
+                      if terms[1][0] == RDF_TYPE_IRI and terms[2][1]}
+    sm.check_equal("every class the MVP emits is in the profile registry",
+                   sorted(t for t in _emitted_types
+                          if _kind_of_class(t) is None), [])
 
     for label, res_ in [("upstream not-applicable", resUP),
                         ("ski matched", result),

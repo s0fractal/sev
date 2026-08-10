@@ -528,6 +528,19 @@ reproduced countervector:
   `sev:sourceKind` and `sev:entryDigest`. Counting a member as projected
   while emitting nothing for it is the same silent-truncation class on the
   other branch of the union.
+- **The conformance guard is a type-closure machine, not a membership
+  list.** It carries one machine-readable class hierarchy for the *whole*
+  target profile (`class → parent`, roots being the three disjoint PROV
+  kinds), computes the transitive closure of each node's declared types, and
+  **decides disjointness first**: a node typed both `prov:Activity` and
+  `prov:Entity` is rejected outright rather than excused because the wanted
+  kind happens to be among its types. A position then requires *exactly* the
+  wanted kind. A hand-kept list produced both failures at once — that false
+  negative, and false positives against valid target graphs using
+  `oaip:Execution`, `oaip:Validation`, `bos:Trajectory` or
+  `wrt:Adjudication`. The MVP guard is the same machine restricted to what
+  the projector actually emits, and a vector asserts every class it emits is
+  registered.
 - **The conformance guard must be total over its own type registry.** It
   classifies nodes through a closed registry that includes the PROV **base**
   classes (`prov:Activity`, `prov:Entity`, `prov:Agent`) alongside every
