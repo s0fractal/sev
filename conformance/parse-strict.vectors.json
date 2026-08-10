@@ -1,0 +1,81 @@
+{
+  "vectors": "sev.parse-strict@v0",
+  "note": "language-neutral byte fixtures pinning the COMPLETE parse_strict refusal set (spec names it frozen surface). raw is base64 of the exact input bytes; expected_codes is the exact ordered list of finding codes parse_strict must emit.",
+  "cases": [
+    {
+      "name": "canonical-accept",
+      "raw_b64": "eyJhIjoxfQ==",
+      "expected_codes": []
+    },
+    {
+      "name": "duplicate-member",
+      "raw_b64": "eyJhIjoxLCJhIjoyfQ==",
+      "expected_codes": [
+        "DUPLICATE_MEMBER"
+      ]
+    },
+    {
+      "name": "trailing-data",
+      "raw_b64": "eyJhIjoxfSB0cmFpbGluZw==",
+      "expected_codes": [
+        "TRAILING_DATA"
+      ]
+    },
+    {
+      "name": "nan",
+      "raw_b64": "eyJhIjpOYU59",
+      "expected_codes": [
+        "NOT_I_JSON"
+      ]
+    },
+    {
+      "name": "float",
+      "raw_b64": "eyJhIjoxLjV9",
+      "expected_codes": [
+        "NOT_I_JSON"
+      ]
+    },
+    {
+      "name": "malformed-syntax",
+      "raw_b64": "eyJhIjo=",
+      "expected_codes": [
+        "NOT_JSON"
+      ]
+    },
+    {
+      "name": "over-depth",
+      "raw_b64": "W1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tdXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXQ==",
+      "expected_codes": [
+        "OVER_DEPTH"
+      ]
+    },
+    {
+      "name": "non-canonical-space",
+      "raw_b64": "eyJhIjogMX0=",
+      "expected_codes": [
+        "NOT_CANONICAL"
+      ]
+    },
+    {
+      "name": "invalid-utf8",
+      "raw_b64": "//4=",
+      "expected_codes": [
+        "NOT_UTF8"
+      ]
+    },
+    {
+      "name": "bom",
+      "raw_b64": "77u/e30=",
+      "expected_codes": [
+        "BOM_PRESENT"
+      ]
+    },
+    {
+      "name": "lone-surrogate",
+      "raw_b64": "eyJhIjoiXHVkODAwIn0=",
+      "expected_codes": [
+        "LONE_SURROGATE"
+      ]
+    }
+  ]
+}

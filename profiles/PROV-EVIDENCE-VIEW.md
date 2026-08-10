@@ -1,8 +1,8 @@
 # Profile: PROV Evidence View (sev@v0) — rev 2.2
 
 **Status:** DRAFT rev 2.2, non-normative, unplaced, research draft — **not
-adoptable until `warrant.verification-receipt@v0` (rev 3),
-`ecosystem.snapshot@v0` (rev 2), AND per-protocol OAIP/BOS validation
+adoptable until `warrant.verification-receipt@v0`,
+`ecosystem.snapshot@v0`, AND per-protocol OAIP/BOS validation
 receipts exist**. The blocking is per-quadrant: a Warrant receipt licenses
 projecting the Warrant quadrant only; OAIP and BOS quadrants stay
 L-UNJUDGED (bytes pinned, nothing asserted) until their own protocols
@@ -118,7 +118,9 @@ literal prose).
 | Signature | `urn:wrt:sig:<sha256(JCS({actor,key,sig}))>:<multiplicity>` |
 | Actor | `urn:wrt:actor:<pct-encoded actor string>` |
 | Σ-GLYPH node | `urn:sigma:node:<NodeHash>` |
-| Σ-GLYPH reason occurrence | `urn:sigma:run:<sha256(WID ‖ 0x00 ‖ JSON-pointer ‖ 0x00 ‖ reason_digest)>` |
+| Source occurrence | `urn:sev:source:<sha256(subroot_descriptor_digest ‖ 0x00 ‖ path ‖ 0x00 ‖ entry_digest)>` — `sourceKind` is contract-derived, so the occurrence is scoped to the descriptor that derived it |
+| Reason (stable fact of a record) | `urn:wrt:reason:<sha256(WID ‖ 0x00 ‖ JSON-pointer ‖ 0x00 ‖ reason_digest)>` — an Entity. Carries `sev:pointer`, `sigma:runtime`, `sigma:claimedVerdict`, `wrt:checkRef` (literal digest) and, when that blob is sealed in the same subroot, `wrt:checkBlob`. **Never `prov:used`** — that predicate's domain is an Activity |
+| Check run (one execution of a reason) | `urn:sigma:run:<sha256(receipt_core_digest ‖ 0x00 ‖ WID ‖ 0x00 ‖ JSON-pointer ‖ 0x00 ‖ reason_digest ‖ 0x00 ‖ semantics_digest)>` — an Activity. Two verifications of the same reason under different declared semantics are two runs; keying on the reason alone fused them once datasets merged, and a named graph scopes statements without localizing IRIs |
 | OAIP record | `urn:oaip:record:<sha256 of JCS-canonical record bytes>` |
 | OAIP blob/artifact | `urn:oaip:blob:<sha256>` |
 | BOS atom (semantic id) | `urn:bos:atom:<pct-encoded bos id>` |
@@ -231,22 +233,86 @@ noting SHACL checks shape, not truth; truth was checked at R1/R3.
 | `verification_class` | literal; `adjudicated`/`research` also listed under L-VCLASS |
 | governance status | six axis literals; `proposed` MUST NOT render as adopted |
 
-### 4.4 Σ-GLYPH reason occurrence → PROV
+### 4.4 Reason and check run → PROV
+
+**Two objects, never one.** The reason is a fact of the record; the run is
+one verification of it. This section is normative; the change ledger below
+records only how it got here.
 
 ```
-urn:sigma:run:<…>  a sigma:CheckRun ;              # ⊑ prov:Activity
-    prov:used urn:wrt:blob:<check> , urn:sigma:node:<term_hash> ;
-    prov:generated urn:sigma:node:<result_hash> ;
-    sigma:atp "<int>"^^xsd:integer ;
+urn:wrt:reason:<…>  a wrt:Reason ;                 # ⊑ prov:Entity
+    sev:pointer "/because/<i>" ;
+    sigma:reasonDigest "<hex64>" ;
     sigma:runtime "ski@v1" ;
+    sigma:claimedVerdict "pass" | "fail" ;
+    wrt:checkRef "<hex64 of the committed check blob>" ;
+    wrt:checkBlob urn:wrt:blob:<check> .           # ONLY if sealed in this subroot
+
+urn:wrt:record:<WID>  wrt:hasReason  urn:wrt:reason:<…> .
+
+urn:sigma:run:<…>  a sigma:CheckRun ;              # ⊑ prov:Activity
+    prov:used urn:wrt:reason:<…> ;
+    prov:used urn:wrt:blob:<check> ;               # ONLY when it actually ran
+    prov:used urn:wrt:record:<WID> ;              # the record it read the reason from
+    sev:receiptCoreDigest "<hex64>" ;
     sigma:semanticsDigest "<hex64 from execution_policy>" ;
-    sigma:claimedVerdict "<from the reason>" ;
     sigma:reExecution "matched" | "mismatched" | "unverified" ;
     sigma:observedVerdict "<from outcome, absent if not run>" ;
-    sigma:observedResult urn:sigma:node:<from outcome, absent if not run> ;
-    sigma:atpSpent "<int from outcome, absent if not run>"^^xsd:integer ;
+    prov:generated urn:sigma:node:<observed_result> ;   # absent if not run
+    sigma:atpSpent "<int, absent if not run>"^^xsd:integer ;
     sigma:failureCode "<closed code, only when unverified>" .
 ```
+
+Rules this shape enforces:
+
+- **A Reason never carries `prov:used`.** Its PROV domain is an Activity;
+  hanging the check edge on the Entity re-fuses the two objects. The Reason
+  *names* its check (`wrt:checkRef`) and, only when that blob is sealed in
+  the same subroot, *points at* it (`wrt:checkBlob`).
+- **`prov:used` on the check blob is emitted only for `matched`/
+  `mismatched`.** An `unverified` run used nothing — asserting otherwise
+  describes an execution that did not happen. `MISSING_BLOB` keeps the weak
+  reference and nothing more.
+- **`matched`/`mismatched` require the check blob to be AVAILABLE in this
+  subroot** (`CHECK_BLOB_ABSENT`): warrant SPEC §6 resolves the check as a
+  blob, and §6(7) keeps "re-ran" and "could not run" observationally
+  distinct, so a re-execution over an unavailable blob is an impossible
+  verdict, not a detail. "Available" is a single predicate — the source is
+  a `blob`, is loaded, and carries no ERR issue. A digest that exists only
+  as a README (`other`), as a record, or as a blob the manifest excludes
+  does **not** resolve a check reference; the verdict and the projection
+  share that one definition, so the graph can never claim to have used what
+  the manifest reports as excluded.
+
+- **A producer-asserted field never relaxes a rule.** Receipt-reported
+  `valid`/`binding` are claims SEV cannot verify and whose producer is not
+  authenticated; they may constrain the receipt's internal consistency, but
+  they may not buy a severity downgrade for anything else in it. Malformed
+  signature occurrences are therefore always ERR — stricter than warrant
+  SPEC §5, deliberately, because the alternative is SEV re-implementing
+  Warrant's cryptography and thereby judging another protocol's bytes.
+- **Acknowledgement is semantic.** A malformed occurrence counts as
+  reported only when the receipt carries an issue matching the normative
+  `(pointer, code, severity)` tuple; an unrelated issue at the same pointer
+  legalises nothing. Presence for `coverage`/`L-NO*` is derived from the
+  total derivation, so a malformed signature is signature evidence — never
+  absence — even when no `signatures[]` entry exists for it.
+- **Malformed committed evidence is evidence, not absence.** Derivation
+  over the envelope is total: unparseable `sigs`/`because` shapes become
+  located malformed occurrences the receipt must report, never an empty
+  expected set. Otherwise "this dataset holds no signature evidence" could
+  mean "the committed signature was malformed and nobody said so".
+- **Coverage is only as honest as the receipt's completeness.** A
+  dataset-relative statement (`coverage`, `L-NO*`) presupposes that the
+  receipt reports everything the committed bytes contain: signatures bound
+  to the envelope's `sigs[]` and one reason per committed `kind:"check"`
+  entry. Without that bijection, "this dataset holds no signature evidence"
+  degrades to "the receipt did not mention any".
+- **Projection reads only the validated view.** The verdict freezes private
+  copies of snapshot, receipt, descriptor and committed reasons, and the
+  projector consumes those — never the caller's objects, never the store.
+  Otherwise a caller whose objects change between the two phases gets a
+  graph asserting a core the validator never saw.
 
 Every `sigma:*` value is copied from the receipt's structured
 `reasons[].outcome`, never computed by the projector — rev 2.2 note: this is
@@ -298,6 +364,23 @@ dataset is a source of *attribution*, never a single source of meaning
 semantica's "single shared intelligence layer").
 
 ## 6. What travels, what doesn't
+
+> **`coverage` is dataset-relative, not a capability list.** Its `emitted`
+> set is derived from what the run actually put in the graph and its
+> `not_emitted` set from evidence the input actually held; a static list of
+> what the projector *could* emit would claim categories absent from the
+> input. If a capability list is ever wanted, it belongs in a separate
+> `projector_capabilities` field with `supported`/`unsupported`, never here.
+>
+> **Target profile vs current MVP coverage.** Everything in this section
+> describes the *target* `sev@v0` mapping. The reference projector
+> (`model/sev_projector.py`) implements a deliberately narrow subset and
+> declares the gap machine-readably — see the coverage block in §9 and the
+> `L-NO*` codes in §8. Where this section says a class of evidence is
+> "carried" and the MVP does not emit it, the MVP is not in violation: it is
+> required to say so, and it does. A reader MUST take the emitted
+> `coverage` block, not this prose, as the statement of what a given
+> dataset contains.
 
 Carried as data: `term_hash`/`result_hash`/`atp`, grade, per-signature
 validity+binding, re-execution status, threshold flags, confidence_ppm,
@@ -358,6 +441,31 @@ Emitted alongside the graph as JCS-canonical JSON. Codes:
 | L-COMPLETE | Completeness is relative to the sealed snapshot's universe, never global (an `expected.closed` snapshot commitment upgrades omission to a detectable event — see `ECOSYSTEM-SNAPSHOT.md`) |
 | L-UNJUDGED | A subroot present in the bundle carries no validation receipt from its own protocol; its bytes are pinned but unadjudicated |
 
+**Absence codes (`L-NO*`) — what the projection does not emit at all.** The
+codes above qualify facts that ARE in the graph; these declare facts that
+are NOT. Emitted only when the corresponding data actually exists in the
+receipt or snapshot, so a manifest never claims a loss it does not have:
+
+| Code | Declares |
+|---|---|
+| L-NOSIG | The receipt carries signature results (validity/binding) and the projection emits no signature nodes at all |
+| L-NOSETTLE | The receipt carries jurisdiction-scoped settlement and the projection emits no settlement nodes at all |
+| L-NOUNCLAIMED | The snapshot pins `unclaimed` members that are not projected |
+| L-NOMAP | The §4.1 record-body mapping (actor, `under`/Plan, subject, evidence, `prior`) is not implemented by this projector |
+
+A caveat on an absent fact is worse than silence: it reads as
+"present, with reservations". Hence the split — qualify what is there,
+declare what is not.
+
+**Every entry is dataset-relative.** This applies to the qualifying codes
+too, not only the `L-NO*` family: `L-REEXEC` only where a check run was
+emitted, `L-SETTLE` only where signature/settlement evidence exists,
+`L-CANON` only where the graph is non-empty, `L-NOMAP` only where a record
+was actually projected. A blob-only subroot therefore carries neither — a
+manifest that listed record, reason and signature losses over a dataset
+holding none of them would be making exactly the claim this section
+forbids.
+
 Each entry carries `code`, `affects` (IRIs or `"*"`), and `recheck` — an
 **argv array** plus the digest of the tool/profile that interprets it
 (`{"argv": ["warrant", "--store", "…", "verify"], "tool_digest": "<hex64>"}`),
@@ -371,6 +479,7 @@ the hash, not the host — and not this graph either."
 {
   "view": "sev@v0",
   "profile_revision": "<sha256 of this document's bytes>",
+  "projector_digest": "<sha256 of the projector implementation's bytes — the graph digest means nothing without knowing which semantics produced it>",
   "bundle_root": "<hex64 — the ecosystem.snapshot@v0 identity>",
   "receipts": [
     { "protocol": "warrant", "subroot": "<hex64>",
@@ -381,7 +490,13 @@ the hash, not the host — and not this graph either."
   "sources_projected": 12,
   "sources_excluded": 2,
   "exclusions": [ { "path": "…", "entry_digest": "<hex64>",
-                    "issues": [ {"code": "…", "severity": "ERR"} ] } ],
+                    "projection_reason": "ERR_ISSUES | NOT_LOADED | ID_UNSOUND",
+                    "issues": [ {"code": "…", "severity": "ERR", "at": {"…"}} ] } ],
+  "coverage": {
+    "emitted": ["<categories THIS dataset actually contains>"],
+    "not_emitted": ["<categories whose input evidence exists but is not projected>"],
+    "note": "categories are relative to THIS dataset; sources_projected counts sources admitted to the graph, NOT completeness of the profile mapping over them"
+  },
   "unverified_reasons": 0,
   "graph_digest": "<hex64>",
   "loss_manifest_digest": "<hex64>",
@@ -395,6 +510,123 @@ the hash, not the host — and not this graph either."
 source (malformed inputs included — they have paths and entry digests even
 when no `wid` exists). Silent truncation is the recurring bug class of this
 stack's own gates; the manifest makes it structurally loud.
+
+Three rules the projector MVP had to learn the hard way, each from a
+reproduced countervector:
+
+- **Exclusion issues are carried verbatim and detached.** The receipt's
+  ordered multiset is copied byte-for-byte (locators, severities and
+  `occurrence` ordinals intact — collapsing to a set of codes merged two
+  distinct occurrences into one row), and it is **deep-copied at emission**:
+  an issued manifest must not change when its input receipt is later
+  mutated. The projector's own reason for skipping a source lives in a
+  separate `projection_reason` field and is never merged into the receipt's
+  findings — one is a judgement by the verifier, the other a decision by the
+  projector.
+- **Every projected source is actually in the graph.** Non-record members
+  (`blob`, `genesis`, `other`) emit a generic `prov:Entity` carrying
+  `sev:sourceKind` and `sev:entryDigest`. Counting a member as projected
+  while emitting nothing for it is the same silent-truncation class on the
+  other branch of the union.
+- **Disjointness is an explicit axiom set, not "more than one kind".**
+  PROV-O declares `prov:Activity owl:disjointWith prov:Entity` — and that is
+  the only such axiom among the three roots. An Agent may also be an Entity;
+  PROV-O's own normative `wasAssociatedWith` example types its agent as
+  `Person`, `Agent` **and** `Entity`. So the guard checks the declared
+  disjoint pairs first, and a position then asks only whether the required
+  kind is *present* — a legal `Agent ∩ Entity` node satisfies both an Agent
+  and an Entity position. Treating all three roots as mutually disjoint, or
+  demanding an exact single kind, rejects normative PROV.
+- **The conformance guard is a type-closure machine reading a data
+  artifact.** Classes (`class → parent`), the disjointness axioms and the
+  predicate endpoint kinds live together in `conformance/prov-shapes.json`,
+  not in code — a complete class registry beside an MVP-only predicate list
+  is the failure this split exists to prevent. The guard resolves each
+  node's declared types through their transitive closure, decides
+  **disjointness first** over the declared pairs, and then asks whether a
+  position's required kind is *present*. Untyped nodes are Entities; a
+  literal is never a PROV node in any object-property position; N-Quads is
+  parsed structurally rather than split on spaces. A hand-kept list
+  previously produced both a false negative (`Activity ∩ Entity` accepted)
+  and false positives (valid graphs using `oaip:Execution`,
+  `oaip:Validation`, `bos:Trajectory`, `wrt:Adjudication` rejected).
+
+  **Endpoints name a kind *or* an exact class.** A root kind is too coarse
+  for PROV's qualified relations: collapsing `Usage`, `Association` and
+  `Attribution` into one `influence` kind let `qualifiedUsage` point at an
+  Association, `hadPlan` run from any Influence to any Entity, and
+  `hadMember` start at any Entity. The shape language therefore allows
+  `{"kind": …}` or `{"class": …}`, the latter satisfied by that class or any
+  declared subclass — so PROV-O's real ranges are expressed:
+  `qualifiedUsage → Usage`, `qualifiedAssociation → Association`,
+  `qualifiedAttribution → Attribution`, `hadPlan: Association → Plan`,
+  `hadMember: Collection → Entity`. The machine keeps each node's full class
+  ancestry rather than reducing it to a root kind immediately. The artifact
+  also **validates itself** — no dangling parents, no cycles, every class
+  reaching a declared root, every endpoint class known, every declared MVP
+  predicate real.
+
+  **Target coverage vs MVP coverage are named, not conflated.** The shapes
+  file carries every target predicate — including ones the current MVP never
+  emits (`wasDerivedFrom`, `wasInvalidatedBy`, `qualifiedUsage`,
+  `qualifiedAssociation`, `hadPlan`, `actedOnBehalfOf`, `hadMember`) — and
+  separately declares `mvp_predicates`, the subset this projector can
+  produce. Vectors assert that the declared subset is genuinely a subset and
+  that the projector emits nothing outside it.
+
+- **PROV constrains both ends of a relation.** `prov:wasInformedBy` has an
+  Activity **range** as well as domain, so pointing it at a Warrant record
+  entailed that the record was an Activity. A run that consumed the record's
+  bytes says `prov:used` (Activity → Entity); `wasInformedBy` is reserved for
+  two genuine Activities. The conformance guard is therefore
+  predicate-specific and bidirectional — `used` (Activity→Entity),
+  `wasInformedBy` (Activity→Activity), `generated` (Activity→Entity),
+  `wasGeneratedBy` (Entity→Activity), `wasAssociatedWith` (Activity→Agent),
+  `specializationOf` (Entity→Entity) — and is itself unit-tested against
+  deliberately malformed graphs, because a healthy dataset gives its range
+  clause nothing to catch.
+- **An outcome where nothing ran is not an Activity.** Every reason gets an
+  `sev:ExecutionAssessment` — an **Entity** recording what the receipt says
+  about executing it (`sigma:reExecution`, `sigma:failureCode`,
+  `sev:receiptCoreDigest`, `sev:assesses` the reason). A `sigma:CheckRun`,
+  and with it any PROV predicate whose domain is an Activity
+  (`prov:used`, `prov:wasInformedBy`, `prov:generated`), is emitted **only**
+  for `matched`/`mismatched`. Emitting a run for `not-applicable` or
+  `unverified` made the graph assert an execution under entailment even
+  without an explicit `rdf:type prov:Activity` — precisely the
+  "re-ran ≠ was not executed" collapse warrant SPEC §7 forbids. Coverage
+  lists `check-run` and the manifest carries `L-REEXEC` only when a run was
+  actually emitted.
+- **A reason is not an execution of it.** `urn:wrt:reason:<sha256(wid ‖ ptr ‖
+  reason_digest)>` is a stable fact of the record; `urn:sigma:run:<sha256(
+  receipt_core_digest ‖ wid ‖ ptr ‖ reason_digest ‖ semantics_digest)>` is
+  one execution under one declared semantics, carrying
+  `sigma:semanticsDigest`, `sev:receiptCoreDigest` and `prov:used` (the
+  reason and the check blob). Keying the run on the reason alone fused two
+  executions under *different* semantics into one `prov:Activity` — a named
+  graph scopes a statement, it does not localize an IRI.
+- **A role matching the bytes is not a role that is allowed.** Only a
+  committed `kind:"check"` may become a `CheckRun`, and its runtime must be
+  in the closed registry for that **body version** (warrant SPEC §3:
+  `"0.1"` → `cmd@v1`; `"0.2"` → `cmd@v1 | ski@v1`; anything else invalidates
+  the record). `execution_policy` narrows what a verifier will run; it never
+  extends the registry.
+- **Occurrence identity is distinct from content identity.** A source node
+  is `urn:sev:source:<sha256(subroot_descriptor_digest ‖ path ‖
+  entry_digest)>` carrying `sev:path`, `sev:sourceKind`, `sev:entryDigest`
+  and `sev:inSubroot` — scoped to the descriptor, because `sourceKind` is a
+  contract-derived assertion — and it
+  `prov:specializationOf` the content entity (`urn:wrt:blob:<digest>`, or
+  `urn:wrt:record:<wid>` for records). Keying source nodes on the digest
+  alone merged two paths holding identical bytes into one node with two
+  kinds — the graph silently losing a multiplicity the receipt records.
+- **A source's role is derived, never reported.** `kind` and a record's
+  `claimed_wid` follow from the store layout under the descriptor prefix
+  (`records/<hex64>.json`, `blobs/*`, `genesis.json`, else `other`); a
+  receipt that disagrees produces `SOURCE_KIND_MISMATCH` or
+  `CLAIMED_WID_NOT_PATH` and no graph. Otherwise a receipt could relabel a
+  committed Warrant record as `other` and make it disappear from the
+  evidence view while the manifest still called it projected.
 
 ## 10. Conformance
 

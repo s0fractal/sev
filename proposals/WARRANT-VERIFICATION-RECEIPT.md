@@ -6,7 +6,7 @@
 > a normative copy and instead pins the Warrant artifact/version/digest, and
 > this document remains here as provenance, marked superseded.
 
-**Status:** PROPOSAL SKETCH **rev 5** (2026-08-10), design-only, not filed.
+**Status:** PROPOSAL SKETCH **rev 15** (2026-08-10), design-only, not filed.
 Rev 5 (fifth Codex review, AMEND — compositional layer): the public verdict
 is now **`validate_warrant_receipt(snapshot, receipt, cas)`** in the model —
 descriptor lookup by digest, semantic role check (incl. non-null
@@ -45,8 +45,9 @@ implications** and a **total reason-outcome sum type** (both executable in
 `model/snapshot_model.py: validate_receipt_core`), multiset sum notation
 (`⊎`, not `∪`), and a mandatory **semantic role check** of the warrant-slot
 descriptor including non-null `spec_digest`. Companions:
-`ECOSYSTEM-SNAPSHOT.md` (rev 3), `PROV-EVIDENCE-VIEW.md` (sev),
-`model/snapshot_model.py` (v2).
+`ECOSYSTEM-SNAPSHOT.md`, `PROV-EVIDENCE-VIEW.md`, `model/snapshot_model.py`.
+*(Companion revisions are deliberately not pinned here: like the section
+numbers, they decay — check each document's own header.)*
 
 ## Scope rule (unchanged)
 
@@ -204,6 +205,140 @@ JCS-canonical I-JSON per warrant SPEC §4; closed schemas; one type tag.
 - ▲ **`global_issues[]`** carries store- and settlement-level problems that
   belong to no single source file (invalid threshold policy, unverified
   genesis, missing jurisdiction root).
+- ▲ **A source's issues are local to that source (rev 15).** In
+  `sources[].issues[]` a `path` locator MUST equal that source's own path,
+  `json-pointer` and `byte-range` are relative to it, and the `global` kind
+  is not permitted — store-wide subjects belong in `global_issues[]`, where
+  they are attached to no member. Findings: `ISSUE_OUT_OF_SCOPE`,
+  `GLOBAL_ISSUE_ON_SOURCE`. Without the rule, exclusion keys on "any ERR on
+  this source" and an ERR *about another file* silently erased a healthy
+  record while `exclusions[]` paired its path with a foreign coordinate.
+  Note the ordering lesson: fixing the acknowledgement join was necessary
+  and not sufficient, because acknowledgement and exclusion are two
+  different consumers of the same list.
+- ▲ **`loaded` is derived, never chosen (rev 14).** It means exactly: the
+  consumer obtained that member's bytes and their digest matched. Parse and
+  schema failures are *issues*, not un-loadedness. Treating the producer's
+  field as permission to skip byte derivation let a fabricated "unreadable"
+  record — bytes present in the store, digest correct, strict parse clean —
+  validate cleanly and disappear from the projected graph. The consumer now
+  resolves every member and reports `LOADED_MISREPORTED` on disagreement in
+  either direction, and byte-derived checks follow the derived value.
+- ▲ **`producer` is host-local but still has a wire contract (rev 14).**
+  "Host-local" means outside consensus identity, not unvalidated: the block
+  is a closed schema (`impl`, `artifact_digest`, `spec`, `report_digest`,
+  `local_notes`) with exact keys and types, so a structural inspection can
+  honestly call itself structural.
+- ▲ **Absence of evidence is not evidence (rev 13).** The composed verdict
+  REQUIRES an evidence resolver; `cas = None` is `CAS_REQUIRED`, never a
+  clean result. Every identity-bearing check — WarrantID re-derivation,
+  envelope signature and reason completeness, the semantic reason binding —
+  is byte-derived, so without a store a clean verdict means "nothing could
+  be checked" while reading as "verified": a resealed record whose body
+  changed, with stale WarrantIDs in the receipt, passed and was projected.
+  A shape-only inspection remains available under a **different name**
+  (`validate_structure_only`) whose result cannot be mistaken for
+  verification. Consumers inherit the rule: the projector refuses before
+  projecting when no resolver is supplied.
+- ▲ **A reused output sink is cleared before publication (rev 13)**, so a
+  refused verdict cannot leave an earlier successful view behind.
+- ▲ **The failure path never re-executes hostile code (rev 13):** no
+  `repr()` of an attacker-supplied exception, and only exact `bytes` /
+  `bytearray` are accepted from a resolver — a subclass can override
+  `__bytes__`.
+- ▲ **Diagnostics never change a verdict (rev 12).** A verifier's optional
+  output — the validated view, a report sink, anything a caller may or may
+  not ask for — MUST be a pure output. Making the input freeze and the
+  committed-reason derivation conditional on the caller supplying a sink
+  meant the same public validator judged different objects depending on
+  whether diagnostics were requested: without a sink an impossible
+  `matched` over an absent check blob was accepted, and input isolation was
+  skipped entirely. The verdict is computed over an unconditional internal
+  view; the external sink receives a copy afterwards and is never read
+  during judging. Conformance: `view=None`, `view={}` and a populated sink
+  MUST yield identical findings.
+- ▲ **The CAS boundary is bounded (rev 12).** A resolver is external code.
+  A missing key stays a `KeyError`; a raising resolver or a non-bytes value
+  becomes a `SealViolation`, never a host exception escaping the validator.
+- ▲ **A receipt may not contradict its own negative claims (rev 11).** If a
+  receipt reports **no** signature with `valid: true` whose `actor` equals
+  the committed `body.actor.id`, it MUST carry an ERR
+  `NO_VALID_ACTOR_SIGNATURE` and count it — warrant SPEC §5 makes a record
+  with no valid actor signature an error, and a receipt claiming
+  `ok: true, errors: 0` beside its own `valid: false` is self-contradictory.
+  The rule is deliberately **one-way**: it does not make `valid: true`
+  trustworthy (SEV verifies nothing), it only forbids the receipt from
+  disagreeing with itself. Finding: `NO_VALID_ACTOR_SIGNATURE_UNREPORTED`.
+- ▲ **No producer-asserted field may relax a rule applied to the same
+  receipt (rev 10).** The severity matrix briefly let a malformed EXTRA
+  co-signature be WARN when a valid signature by `body.actor.id` survived —
+  per warrant SPEC §5 — but the only evidence of that validity was the
+  receipt's own `valid` field. The shipped fixture already claimed
+  `valid: true` over a key/signature pair that cannot verify under
+  `warrant-sig-v1`, and thereby bought its own downgrade. A claim deciding
+  how strictly its siblings are judged is self-authorisation.
+
+  Two honest resolutions existed: verify Ed25519 independently, or drop the
+  downgrade. **SEV takes the second**, because the first would make SEV a
+  second Warrant verifier — the ownership boundary this repository exists to
+  hold is that each protocol judges its own bytes. So malformed signature
+  occurrences are **always ERR**, this matrix is deliberately *not* called
+  Warrant-consistent (it is strictly stronger and fails closed), and the
+  §5 survivable path may be reinstated only on an independently verifiable
+  basis — a signed receipt, or Warrant's own verifier output bound to it.
+  Fixture signatures are now reported `valid: false` with the matching
+  `INVALID_SIGNATURE` occurrences: they are synthetic placeholders, and
+  claiming they verified would assert what this repository cannot back.
+- ▲ **Acknowledging a malformed occurrence is semantic, not positional
+  (rev 9).** The receipt must carry an issue matching a normative
+  `(pointer, code, severity)` tuple — matching the JSON pointer alone let any
+  unrelated WARN at the same address legalise malformed evidence, keeping
+  `ok:true`, avoiding exclusion, and letting coverage call a malformed
+  signature "no signature evidence". The matrix is not one universal
+  severity, because warrant SPEC §5 distinguishes fatal from survivable:
+
+  | Occurrence | Code | Severity |
+  |---|---|---|
+  | `sigs` is not a list | `MALFORMED_ENVELOPE` | ERR |
+  | a malformed signature, while a reported-valid signature by `body.actor.id` survives | `MALFORMED_SIGNATURE` | WARN or ERR |
+  | a malformed signature with no surviving valid actor-signature | `MALFORMED_SIGNATURE` | ERR |
+  | `because` is not a list | `MALFORMED_BODY_SCHEMA` | ERR |
+  | a malformed `because` entry | `MALFORMED_REASON` | ERR |
+
+  Evidence **presence** is likewise derived from the total derivation: a
+  malformed occurrence counts as evidence the input held even though it is
+  represented by an issue rather than an entry, so coverage can never read
+  it as absence.
+- ▲ **The binding is over EVERY committed occurrence, not the well-formed
+  subset (rev 8).** Derivation is total: `sigs`/`because` that are not
+  lists, entries that are not objects, and entries failing warrant SPEC §3's
+  closed shapes are returned as **malformed occurrences**, never filtered
+  away. A malformed occurrence does not belong in `signatures[]`/`reasons[]`
+  — but the receipt MUST carry a precisely located issue for it
+  (`MALFORMED_ENVELOPE_UNREPORTED` otherwise), which then carries the record
+  into exclusions honestly. Only a **well-formed prose** reason is
+  legitimately non-reportable. Without this, `{"sigs": [7]}` derived an
+  empty expected multiset and a receipt reporting no signatures was an
+  "exact bijection" with it — malformed evidence became *no* evidence.
+- ▲ **Nested entries are bound to the envelope, not merely well-formed
+  (rev 7).** `signatures[]` MUST be an exact bijection with the committed
+  envelope's `sigs[]` — same `(sig_digest, multiplicity)` multiset, with
+  `actor`/`key` matching the committed bytes — and `reasons[]` MUST account
+  for exactly the committed `because` entries of `kind:"check"`, one each.
+  Findings: `SIGNATURE_MISSING`, `SIGNATURE_NOT_IN_ENVELOPE`,
+  `SIGNATURE_FIELD_MISMATCH`, `DUPLICATE_SIGNATURE_ENTRY`,
+  `REASON_MISSING`, `REASON_NOT_COMMITTED`, `DUPLICATE_REASON_POINTER`.
+  Without this, shape validation alone let a clean receipt **omit** an
+  envelope signature, **omit** a committed check reason, or **invent** a
+  bound signature — and any downstream "dataset-relative" statement would
+  then be relative only to what the receipt chose to disclose.
+- ▲ **Both WID halves are derived, not reported (rev 6).** `claimed_wid`
+  comes from the filename under the store layout, and `computed_wid` MUST be
+  re-derived by the consumer as `sha256(JCS(body))` from the committed bytes
+  — internal equality of the two fields only proves the receipt agrees with
+  itself, and a stale `computed_wid` over an edited body kept a graph
+  asserting an identity the bytes no longer had. Findings:
+  `COMPUTED_WID_MISMATCH`, `CLAIMED_WID_NOT_PATH`.
 - ▲ **`claimed_wid` / `computed_wid`, both nullable.** For
   `records/<claimed>.json` whose body canonicalizes to a different WarrantID,
   rev 2's single `wid` was ambiguous (filename claim? recomputation?
@@ -288,6 +423,17 @@ non-conformant; `settlement` as boolean ⇒ schema-invalid; a `kind:"record"`
 field on a blob source ⇒ schema-invalid; `observed_result` present with
 `re_execution:"unverified"` ⇒ schema-invalid; receipt bound to a bare
 file-tree hash ⇒ not this contract.
+
+## v0 freeze candidate (round-6 R6)
+
+Candidate frozen surface: `core`/`producer` split with
+`receipt_core_digest`; the counts invariants (`errors`/`warnings`/`ok` bound
+to the issue multiset); the universe↔sources bijection; source identity
+`(path, entry_digest)` with `claimed_wid`/`computed_wid`; the reason-outcome
+sum type. Extension points until separately frozen: the issue-code registry,
+locator grammar details, `execution_policy` runtime entries beyond `ski@v1`,
+settlement entry internals. Freeze happens on the first review round with
+zero P1 findings — a maintainer act, not this document's.
 
 ## Open questions
 

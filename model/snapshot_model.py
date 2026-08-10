@@ -26,6 +26,7 @@ order and value domains open (round 5). v3 closes the round-5 order:
 Stdlib only. Exit status is the verdict.  Run:  python3 snapshot_model.py
 """
 
+import copy
 import hashlib
 import json
 import os
@@ -38,12 +39,18 @@ SUBROOT_DOMAIN = b"ecosystem-subroot-v0:"
 SNAPSHOT_DOMAIN = b"ecosystem-snapshot-v0:"
 ZERO64 = "0" * 64
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
+HEX128 = re.compile(r"^[0-9a-f]{128}$")
 PTR_RE = re.compile(r"^/because/(0|[1-9][0-9]*)$")
 SAFE_INT_MAX = 9007199254740991
 FAILURE_CODES = {"OVER_BUDGET", "MISSING_BLOB", "MALFORMED_CHECK",
                  "RUNTIME_UNAVAILABLE", "ORACLE_UNAVAILABLE"}
 VERDICTS = {"pass", "fail"}
 NORMATIVE_NOT_EXECUTED = {"cmd@v1"}  # warrant SPEC: verify does not re-run these
+# warrant SPEC §3: the runtime registry is closed and keyed by BODY version —
+# ski@v1 is available in "0.2" bodies and reserved (MUST reject) in "0.1";
+# any other value makes the record invalid. execution_policy may narrow
+# availability, never extend this registry.
+RUNTIME_REGISTRY = {"0.1": {"cmd@v1"}, "0.2": {"cmd@v1", "ski@v1"}}
 GLOBAL_SUBJECTS = {"settlement", "store", "trust", "genesis"}
 SNAPSHOT_KEYS = {"snapshot", "bundle_root", "subroots", "unclaimed", "closed"}
 WRAPPER_KEYS = {"subroot", "protocol", "contract", "prefix", "universe", "digest"}
@@ -64,7 +71,9 @@ POLICY_KEYS = {"policy", "threshold_satisfied"}
 
 # ---------------------------------------------------------------- JCS subset
 
-def jcs(value):
+def jcs(value, _depth=0):
+    if _depth > MAX_FREEZE_DEPTH:
+        raise ValueError("over depth budget")
     if isinstance(value, bool) or value is None:
         return b"true" if value is True else (b"false" if value is False else b"null")
     if isinstance(value, int):
@@ -76,14 +85,14 @@ def jcs(value):
     if isinstance(value, str):
         return json.dumps(value, ensure_ascii=False).encode("utf-8", "surrogatepass")
     if isinstance(value, list):
-        return b"[" + b",".join(jcs(v) for v in value) + b"]"
+        return b"[" + b",".join(jcs(v, _depth + 1) for v in value) + b"]"
     if isinstance(value, dict):
         items = []
         for k in sorted(value.keys(), key=lambda s: s.encode("utf-16-be", "surrogatepass")):
             if not isinstance(k, str):
                 raise ValueError("non-string key")
             items.append(json.dumps(k, ensure_ascii=False).encode("utf-8", "surrogatepass")
-                         + b":" + jcs(value[k]))
+                         + b":" + jcs(value[k], _depth + 1))
         return b"{" + b",".join(items) + b"}"
     raise ValueError("unsupported type")
 
@@ -165,20 +174,42 @@ def parse_strict(raw) -> tuple:
     except _DupKey:
         _f(f, "DUPLICATE_MEMBER", "/")
         return None, f
+    except RecursionError:
+        # The byte layer needs the depth bound the freeze layer already has:
+        # `[`*500 blew the stack out of the "total" composed verdict on
+        # hostile evidence bytes (Kimi round 7). Nesting deeper than the
+        # format admits is a refusal, not a crash.
+        #
+        # Unisolatable on this interpreter and labelled rather than counted:
+        # CPython's C scanner does not raise here, so the later jcs depth
+        # budget catches the same inputs first. Kept because a pure-Python
+        # json fallback or another build DOES raise at this exact point —
+        # the coincidence is a property of one interpreter, not of the
+        # format.
+        _f(f, "OVER_DEPTH", "/")
+        return None, f
     except ValueError as exc:
         _f(f, "NOT_I_JSON" if str(exc) in ("constant", "float") else "NOT_JSON", "/")
         return None, f
     if text[end:].strip("\r\n\t "):
         _f(f, "TRAILING_DATA", "/")
         return None, f
-    if _scan_surrogates(obj):
-        _f(f, "LONE_SURROGATE", "/")
+    try:
+        if _scan_surrogates(obj):
+            _f(f, "LONE_SURROGATE", "/")
+            return None, f
+    except RecursionError:
+        _f(f, "OVER_DEPTH", "/")
         return None, f
     try:
         if jcs(obj) != raw:
             _f(f, "NOT_CANONICAL", "/")
-    except ValueError:
-        _f(f, "NOT_I_JSON", "/")
+    except RecursionError:
+        _f(f, "OVER_DEPTH", "/")
+        return None, f
+    except ValueError as exc:
+        _f(f, "OVER_DEPTH" if "depth" in str(exc) else "NOT_I_JSON", "/")
+        return None, f
     return obj, f
 
 
@@ -189,8 +220,14 @@ def parse_snapshot(raw, cas=None) -> tuple:
     return obj, f
 
 
-def parse_receipt(raw) -> tuple:
-    return parse_strict(raw)
+def parse_receipt(raw, snapshot=None, cas=None) -> tuple:
+    """Symmetric with parse_snapshot: bytes in, findings out. With a
+    snapshot supplied, runs the full composed verdict; without one, only the
+    byte boundary (a receipt cannot be semantically judged in isolation)."""
+    obj, f = parse_strict(raw)
+    if obj is not None and not f and snapshot is not None:
+        f = validate_warrant_receipt(snapshot, obj, cas)
+    return obj, f
 
 
 # ------------------------------------------------------------- logical paths
@@ -310,7 +347,25 @@ def verify_bundle_root(obj) -> bool:
 
 
 def cas_resolve(store, digest):
-    data = store[digest]
+    """Bounded at the CAS boundary: a resolver is external code and may fail
+    in ordinary ways. A missing key stays a KeyError (callers already handle
+    it); anything else — a raising resolver, a non-bytes value — becomes a
+    SealViolation rather than escaping the validator as a host exception."""
+    try:
+        data = store[digest]
+    except KeyError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — external resolver, bounded here
+        # NOT repr(exc): an attacker-supplied exception's __repr__ is code,
+        # and calling it in the failure path re-executes hostile logic. The
+        # class name is metadata Python already holds.
+        raise SealViolation("CAS_RESOLVER_FAILED", type(exc).__name__)
+    # exact built-in types only: a bytes/bytearray SUBCLASS can override
+    # __bytes__, so the conversion itself would run hostile code
+    if type(data) is bytearray:
+        data = bytes(data)
+    elif type(data) is not bytes:
+        raise SealViolation("CAS_NOT_BYTES", type(data).__name__)
     if sha256_hex(data) != digest:
         raise SealViolation("CAS_DIGEST_MISMATCH", digest)
     return data
@@ -542,7 +597,7 @@ def _join_issue(issues, code, severity, ptr):
 
 # --------------------------------------------- receipt core (internal layer)
 
-def validate_receipt_core(core, descriptor=None, cas=None) -> list:
+def validate_receipt_core(core, descriptor=None, cas=None, view=None) -> list:
     """Total over any parsed JSON value. Judges internal consistency and,
     when descriptor/cas are supplied by the composed verdict, byte-level
     reason resolution. Public entry is validate_warrant_receipt()."""
@@ -583,7 +638,17 @@ def validate_receipt_core(core, descriptor=None, cas=None) -> list:
                 continue
             good_rt.append(rt)
             runtimes[rt["runtime"]] = rt
-        _ordered(f, good_rt, lambda r: (r["runtime"], r["semantics_digest"]),
+        # Uniqueness is by RUNTIME, not by (runtime, semantics_digest): two
+        # ski@v1 entries with different anchors sorted "correctly" while the
+        # lookup silently kept the last, so the receipt held two answers to
+        # "under which semantics was this executed" (re-gate P1-2).
+        seen_rt = set()
+        for i, rt in enumerate(good_rt):
+            if rt["runtime"] in seen_rt:
+                _f(f, "DUPLICATE_RUNTIME",
+                   "/core/execution_policy/runtimes/%d" % i)
+            seen_rt.add(rt["runtime"])
+        _ordered(f, good_rt, lambda r: r["runtime"],
                  "RUNTIMES_NOT_SORTED", "/core/execution_policy/runtimes")
 
     all_issues = list(_valid_issues(f, core["global_issues"], "/core/global_issues"))
@@ -617,12 +682,50 @@ def validate_receipt_core(core, descriptor=None, cas=None) -> list:
             _f(f, "BAD_LOADED", at + "/loaded")
             continue
         issues = _valid_issues(f, src["issues"], at + "/issues")
+        # A source's issues are LOCAL to that source. Without this, an ERR
+        # whose locator names another member still excluded THIS one: a
+        # healthy record vanished from the graph while `exclusions[]` paired
+        # its path with an issue about a different file (round 12). Fixing
+        # the acknowledgement join alone was not enough, because exclusion
+        # keys on "any ERR here", not on what the ERR is about.
+        for _i, _x in enumerate(issues):
+            _kind = _x["at"].get("kind")
+            _iat = "%s/issues/%d" % (at, _i)
+            if _kind == "path" and _x["at"].get("value") != src["path"]:
+                _f(f, "ISSUE_OUT_OF_SCOPE", _iat)
+            elif _kind == "global":
+                # store-wide subjects belong to global_issues[], where they
+                # are not attached to any member
+                _f(f, "GLOBAL_ISSUE_ON_SOURCE", _iat)
         all_issues.extend(issues)
         good_sources.append(src)
         err_here = any(x["severity"] == "ERR" for x in issues)
         if src["loaded"] is False and not err_here:
             _f(f, "UNLOADED_WITHOUT_ERR", at)
-        if kind != "record" or not src["loaded"]:
+
+        # `loaded` is DERIVED, not chosen. It means exactly: the consumer
+        # obtained this member's bytes and their digest matched. Parse and
+        # schema failures are issues, not un-loadedness. Treating the
+        # producer's field as permission to skip byte derivation let a
+        # fabricated "unreadable" record — bytes present, digest correct,
+        # strict parse clean — validate and vanish from the graph.
+        if cas is not None:
+            try:
+                cas_resolve(cas, src["entry_digest"])
+                derived_loaded = True
+            except (KeyError, SealViolation):
+                derived_loaded = False
+            if src["loaded"] is not derived_loaded:
+                _f(f, "LOADED_MISREPORTED", at)
+            # Gating on the DERIVED value, not the reported one. Unisolatable
+            # by a vector today — a misreport already fires
+            # LOADED_MISREPORTED above, so both gates refuse the same inputs —
+            # and labelled rather than counted. It is kept so that byte
+            # derivation follows the bytes even if that finding is ever
+            # softened.
+            if kind != "record" or not derived_loaded:
+                continue
+        elif kind != "record" or not src["loaded"]:
             continue
 
         c, w = src["claimed_wid"], src["computed_wid"]
@@ -634,6 +737,33 @@ def validate_receipt_core(core, descriptor=None, cas=None) -> list:
             _f(f, "ID_SOUND_INCONSISTENT", at)
         if src["id_sound"] is False and not err_here:
             _f(f, "ID_UNSOUND_WITHOUT_ERR", at)
+
+        # Resolve the record ONCE per source and re-derive the WarrantID from
+        # the committed body. Internal equality of claimed/computed only
+        # proves the receipt agrees with itself: a stale `computed_wid` over
+        # an edited body kept the graph asserting an identity the bytes no
+        # longer have (re-gate P1-1).
+        parsed = None
+        if cas is not None:
+            parsed = _resolve_record(f, cas, src, at, issues)
+            if parsed is not None and view is not None:
+                # the validated view: what the verdict was actually rendered
+                # over, handed to consumers so nothing re-reads the CAS and
+                # judges one snapshot while asserting over another
+                body_obj = parsed.get("body")
+                because = body_obj.get("because") if isinstance(body_obj, dict) else None
+                view.setdefault("committed", {})[src["path"]] = (
+                    json.loads(json.dumps(because)) if isinstance(because, list) else [])
+            if parsed is not None and w is not None:
+                body = parsed.get("body")
+                try:
+                    actual = sha256_hex(jcs(body)) if isinstance(body, dict) else None
+                except ValueError:
+                    actual = None
+                if actual is None:
+                    _f(f, "RECORD_BODY_UNREADABLE", at)
+                elif actual != w:
+                    _f(f, "COMPUTED_WID_MISMATCH", at)
 
         settlement = src["settlement"] if isinstance(src["settlement"], list) else []
         if not isinstance(src["settlement"], list):
@@ -682,6 +812,25 @@ def validate_receipt_core(core, descriptor=None, cas=None) -> list:
                 _f(f, "BINDING_WITHOUT_VALIDITY", sat)
         _ordered(f, good_sigs, lambda s: (s["sig_digest"], s["multiplicity"]),
                  "SIGNATURES_NOT_SORTED", at + "/signatures")
+        # One-way internal-consistency rule, no cryptography involved: if the
+        # receipt itself reports no valid signature by the committed
+        # body.actor.id, it may not simultaneously report ok/errors as if the
+        # record were soundly signed. This does not make `valid: true`
+        # trustworthy — it only forbids a receipt from contradicting its own
+        # NEGATIVE claims (warrant SPEC §5 requires a valid actor signature).
+        body_obj = parsed.get("body") if isinstance(parsed, dict) else None
+        actor_id = (body_obj.get("actor", {}) or {}).get("id") \
+            if isinstance(body_obj, dict) and isinstance(body_obj.get("actor"), dict) \
+            else None
+        if parsed is not None:
+            has_valid_actor_sig = any(
+                s.get("valid") is True and s.get("actor") == actor_id
+                for s in good_sigs) and actor_id is not None
+            if not has_valid_actor_sig and not any(
+                    x["code"] == "NO_VALID_ACTOR_SIGNATURE"
+                    and x["severity"] == "ERR" for x in issues):
+                _f(f, "NO_VALID_ACTOR_SIGNATURE_UNREPORTED", at)
+
         invalid_count = sum(1 for s in good_sigs if s["valid"] is False)
         sig_issues = [x for x in issues if x["code"] == "INVALID_SIGNATURE"
                       and x["severity"] == "WARN"]
@@ -720,6 +869,15 @@ def validate_receipt_core(core, descriptor=None, cas=None) -> list:
                 if o["observed_verdict"] not in VERDICTS:
                     _f(f, "BAD_VERDICT", rat)
                     continue
+                # A re-execution result only means something under declared
+                # semantics: an undeclared runtime has no semantics_digest and
+                # no ceiling, so "matched" would grant authority to a runtime
+                # the verifier never claimed it could run (re-gate P1-1).
+                if rt not in runtimes:
+                    _f(f, "RUNTIME_NOT_DECLARED", rat)
+                    # deliberately not `continue`: the role-binding check
+                    # below must still run, so a swapped runtime reports both
+                    # what it lied about and what it was never licensed to do
                 if rt == "ski@v1" and not _is_hex64(o["observed_result"]):
                     _f(f, "BAD_RESULT_SHAPE", rat)
                 if not (_is_safe_int(o["atp_spent"]) and o["atp_spent"] >= 0):
@@ -752,9 +910,24 @@ def validate_receipt_core(core, descriptor=None, cas=None) -> list:
             else:
                 _f(f, "BAD_RE_EXECUTION", rat)
             if cas is not None:
-                _resolve_reason(f, cas, src, reason, rat)
+                _resolve_reason(f, parsed, reason, rat)
         _ordered(f, good_reasons, lambda r: r["ptr"], "REASONS_NOT_SORTED",
                  at + "/reasons")
+
+        # Completeness against the committed bytes. Without it, "the receipt
+        # reports X" was the whole contract: a receipt could omit an
+        # envelope signature, omit a committed check reason, or invent a
+        # bound signature that exists nowhere — all with zero findings, and
+        # dataset-relative coverage would faithfully describe whatever the
+        # receipt chose to disclose.
+        if parsed is not None:
+            summary = _bind_to_envelope(f, parsed, src, good_sigs,
+                                        good_reasons, at, issues)
+            if view is not None:
+                # evidence PRESENCE is derived from the total derivation, so
+                # a malformed occurrence still counts as evidence the input
+                # held — coverage must not read it as absence
+                view.setdefault("evidence", {})[src["path"]] = summary
 
     _ordered(f, good_sources, lambda s: (path_sort_key(s["path"]), s["entry_digest"]),
              "SOURCES_NOT_SORTED", "/core/sources")
@@ -770,16 +943,275 @@ def validate_receipt_core(core, descriptor=None, cas=None) -> list:
     return f
 
 
-def _resolve_reason(f, cas, src, reason, rat):
-    """ptr must resolve inside the committed record bytes and hash to
-    reason_digest — the byte-level half of the reason contract."""
+def _is_hex128(x) -> bool:
+    return isinstance(x, str) and bool(HEX128.match(x))
+
+
+def envelope_signature_entries(envelope):
+    """(entries, malformed_pointers) over the WHOLE committed `sigs[]`.
+
+    Returning only what parsed cleanly made the "exact bijection" a bijection
+    with a silently filtered subset: `{"sigs": [7]}` derived an empty
+    expected multiset, so a receipt reporting no signatures matched it
+    exactly and the dataset honestly claimed to hold no signature evidence.
+    Malformed occurrences are now returned, and must be accounted for.
+    """
+    entries, malformed, seen = [], [], {}
+    sigs = envelope.get("sigs") if isinstance(envelope, dict) else None
+    if not isinstance(sigs, list):
+        return entries, ["/sigs"]
+    for i, entry in enumerate(sigs):
+        at = "/sigs/%d" % i
+        if not (isinstance(entry, dict) and set(entry.keys()) == {"actor", "key", "sig"}
+                and isinstance(entry.get("actor"), str) and entry["actor"]
+                and _is_hex64(entry.get("key")) and _is_hex128(entry.get("sig"))):
+            malformed.append(at)
+            continue
+        try:
+            digest = sha256_hex(jcs({k: entry[k] for k in ("actor", "key", "sig")}))
+        except ValueError:
+            malformed.append(at)
+            continue
+        mult = seen.get(digest, 0)
+        seen[digest] = mult + 1
+        entries.append((digest, mult, entry["actor"], entry["key"]))
+    return entries, malformed
+
+
+def _reason_shape(item):
+    """'check' | 'prose' | None — None means malformed, per warrant SPEC §3."""
+    if not isinstance(item, dict):
+        return None
+    kind = item.get("kind")
+    keys = set(item.keys())
+    if kind == "prose":
+        return "prose" if keys == {"kind", "text"} and isinstance(
+            item.get("text"), str) else None
+    if kind == "check":
+        ok = (keys <= {"kind", "check", "runtime", "verdict", "transcript"}
+              and {"kind", "check", "runtime", "verdict"} <= keys
+              and _is_hex64(item.get("check"))
+              and isinstance(item.get("runtime"), str) and item["runtime"]
+              and item.get("verdict") in VERDICTS
+              and ("transcript" not in keys or _is_hex64(item["transcript"])))
+        return "check" if ok else None
+    return None
+
+
+def reportable_reason_pointers(envelope):
+    """(reportable_check_pointers, malformed_pointers) over the WHOLE
+    committed `because[]`. Only a **well-formed prose** reason is
+    intentionally non-reportable; anything unrecognised is malformed, not
+    quietly absent."""
+    body = envelope.get("body") if isinstance(envelope, dict) else None
+    because = body.get("because") if isinstance(body, dict) else None
+    if not isinstance(because, list):
+        return set(), ["/body/because"]
+    reportable, malformed = set(), []
+    for i, item in enumerate(because):
+        shape = _reason_shape(item)
+        if shape is None:
+            malformed.append("/body/because/%d" % i)
+        elif shape == "check":
+            reportable.add("/because/%d" % i)
+    return reportable, malformed
+
+
+# Normative code/severity matrix for malformed committed occurrences.
+# Not one universal severity: warrant SPEC §5 lets a malformed EXTRA
+# co-signature be a WARN while a valid actor-signature survives, but a body
+# or reason whose schema is invalid, and an envelope with no valid
+# actor-signature left, are ERR.
+MALFORMED_SIG_CODE = "MALFORMED_SIGNATURE"
+MALFORMED_ENVELOPE_CODE = "MALFORMED_ENVELOPE"
+MALFORMED_REASON_CODE = "MALFORMED_REASON"
+MALFORMED_BODY_CODE = "MALFORMED_BODY_SCHEMA"
+
+
+def _expected_malformed_issues(envelope, expected_sigs, sig_malformed,
+                               reason_malformed, good_sigs):
+    """[(pointer, code, {allowed severities})] the receipt MUST report.
+
+    **Malformed signatures are always ERR.** Warrant SPEC §5 does let a
+    malformed EXTRA co-signature be survivable while a valid signature by
+    `body.actor.id` remains — but deciding that requires knowing the actor
+    signature is *cryptographically* valid, and the only thing SEV has is
+    the receipt's own `valid` field. Letting a producer-asserted claim
+    relax a rule applied to the same receipt is self-authorisation: the
+    shipped fixture already claimed `valid: true` for a key/signature pair
+    that fails `warrant-sig-v1` verification, and thereby bought its
+    malformed extra signature a WARN.
+
+    SEV also must not re-implement Warrant's cryptography to settle this —
+    that is the ownership boundary this repository exists to hold: each
+    protocol judges its own bytes. So the survivable path is **not
+    available** to SEV, and this matrix is deliberately *not* called
+    Warrant-consistent: it is strictly stronger, and fails closed. If a
+    future receipt carries an independently verifiable validity judgement
+    (a signed receipt, or Warrant's own verifier output bound to it), the
+    WARN path can be reinstated on that basis, never on this one.
+    """
+    out = []
+    for ptr in sig_malformed:
+        out.append((ptr, MALFORMED_ENVELOPE_CODE if ptr == "/sigs"
+                    else MALFORMED_SIG_CODE, {"ERR"}))
+    for ptr in reason_malformed:
+        out.append((ptr, MALFORMED_BODY_CODE if ptr == "/body/because"
+                    else MALFORMED_REASON_CODE, {"ERR"}))
+    return out
+
+
+def _bind_to_envelope(f, envelope, src, good_sigs, good_reasons, at, issues):
+    expected_sigs, sig_malformed = envelope_signature_entries(envelope)
+    expected_keyed = {(d, m): (a, k) for d, m, a, k in expected_sigs}
+    reported = {}
+    for s in good_sigs:
+        key = (s["sig_digest"], s["multiplicity"])
+        if key in reported:
+            _f(f, "DUPLICATE_SIGNATURE_ENTRY", at)
+        reported[key] = s
+    for key in sorted(set(expected_keyed) - set(reported)):
+        _f(f, "SIGNATURE_MISSING", "%s [%s:%d]" % (at, key[0], key[1]))
+    for key in sorted(set(reported) - set(expected_keyed)):
+        _f(f, "SIGNATURE_NOT_IN_ENVELOPE", "%s [%s:%d]" % (at, key[0], key[1]))
+    for key in sorted(set(expected_keyed) & set(reported)):
+        actor, pubkey = expected_keyed[key]
+        s = reported[key]
+        if s.get("actor") != actor or s.get("key") != pubkey:
+            _f(f, "SIGNATURE_FIELD_MISMATCH", "%s [%s:%d]" % (at, key[0], key[1]))
+
+    expected_ptrs, reason_malformed = reportable_reason_pointers(envelope)
+    reported_ptrs = {}
+    for r in good_reasons:
+        if r["ptr"] in reported_ptrs:
+            _f(f, "DUPLICATE_REASON_POINTER", "%s%s" % (at, r["ptr"]))
+        reported_ptrs[r["ptr"]] = r
+    for ptr in sorted(expected_ptrs - set(reported_ptrs)):
+        _f(f, "REASON_MISSING", "%s%s" % (at, ptr))
+    for ptr in sorted(set(reported_ptrs) - expected_ptrs):
+        _f(f, "REASON_NOT_COMMITTED", "%s%s" % (at, ptr))
+
+    # A malformed committed occurrence must be acknowledged SEMANTICALLY:
+    # matching on the JSON pointer alone let any unrelated WARN at the same
+    # address legalise it — leaving ok:true, no exclusion, and coverage free
+    # to call a malformed signature "no signature evidence".
+    present = {(x["code"], x["severity"], x["at"].get("value"))
+               for x in issues if isinstance(x.get("at"), dict)
+               and x["at"].get("kind") == "json-pointer"}
+    for ptr, code, severities in _expected_malformed_issues(
+            envelope, expected_sigs, sig_malformed, reason_malformed, good_sigs):
+        if not any((code, sev, ptr) in present for sev in severities):
+            _f(f, "MALFORMED_ENVELOPE_UNREPORTED",
+               "%s%s [%s %s]" % (at, ptr, code, "|".join(sorted(severities))))
+
+    return {"signature_occurrences": len(expected_sigs) + len(sig_malformed),
+            "check_occurrences": len(expected_ptrs) + len(reason_malformed)}
+
+
+def _acknowledges(issues, code, path) -> bool:
+    """An acknowledgement is `(this source's path, code, ERR)`.
+
+    The locator is not decoration: an issue naming another member describes
+    that member, and letting it stand in for this one turns the exclusion
+    record into a false coordinate.
+    """
+    return any(x["code"] == code and x["severity"] == "ERR"
+               and isinstance(x.get("at"), dict)
+               and x["at"].get("kind") == "path"
+               and x["at"].get("value") == path
+               for x in issues)
+
+
+def _resolve_record(f, cas, src, at, issues):
+    """Resolve and parse a record's committed bytes ONCE per source.
+
+    Returns the parsed envelope, or None when the bytes do not parse. A
+    parse failure is **derived evidence about the input**, not a defect of
+    the receipt: emitting it as a fatal finding made an honestly-reported
+    malformed record impossible to represent, contradicting the whole point
+    of a source-oriented receipt (round 8). So the derived outcome is joined
+    against the receipt's own acknowledgement:
+
+      acknowledged correctly  -> receipt valid; the ERR carries the record
+                                 into exclusions, exactly like ID_UNSOUND
+      missing or wrong        -> RECORD_UNREADABLE_UNREPORTED
+      claimed but bytes parse -> SPURIOUS_RECORD_UNREADABLE
+
+    `loaded` stays true throughout: the bytes were obtained.
+    """
     try:
         raw = cas_resolve(cas, src["entry_digest"])
     except (KeyError, SealViolation):
-        _f(f, "REASON_PTR_UNRESOLVABLE", rat)
-        return
-    obj, pf = parse_strict(raw)
-    if obj is None or not isinstance(obj, dict):
+        _f(f, "RECORD_UNRESOLVABLE", at)
+        return None
+    obj, _pf = parse_strict(raw)
+    # `parse_strict` can hand back a decoded object TOGETHER with a finding,
+    # so testing `obj` alone laundered rejected bytes into a projected
+    # evidence node (round 9). Readability therefore requires an empty
+    # finding list — with exactly one documented exception.
+    #
+    # NOT_CANONICAL is not fatal for a Warrant record envelope, because
+    # Warrant does not require one: `WarrantID = SHA-256(canonical_json(body))`
+    # and "the envelope is not hashed" (warrant SPEC §4, §5.1 migration note),
+    # and that store's only writer emits `json.dumps(env, indent=2,
+    # sort_keys=True)` — every real record file on disk is pretty-printed,
+    # including the vendored upstream example. Treating envelope
+    # canonicality as mandatory would not harden SEV; it would make it unable
+    # to read any genuine Warrant store. Canonicality still binds where the
+    # format binds it: the body is re-canonicalized when the WarrantID is
+    # re-derived, and each reason when its digest is checked.
+    # Structural, and labelled unisolatable: today NOT_CANONICAL is the ONLY
+    # code `parse_strict` returns beside a decoded object, so with it exempt
+    # no vector can distinguish this list from the old `obj is not None`
+    # test. It is written as a list anyway, because the laundering was a
+    # property of the shape of the check, not of the code that happened to
+    # take that path.
+    fatal = [x for x in _pf if x["code"] != "NOT_CANONICAL"]
+    parsed_ok = isinstance(obj, dict) and not fatal
+    # Warrant's own verifier enforces the top-level shape outright —
+    # `if set(env) != {"body", "sigs"}: ERR envelope must be {body, sigs}`
+    # (impl/warrant.py:1271). Deriving readability from decodability alone
+    # let a pretty-printed envelope carrying an attacker-controlled extra
+    # member become an evidence node here while that verifier rejects it
+    # (round 10). The shape is derived, then joined with acknowledgement
+    # exactly like a parse failure.
+    envelope_ok = parsed_ok and set(obj.keys()) == {"body", "sigs"}
+    # One join for both branches, and it must match the LOCATOR too: keying
+    # on code+severity alone let an issue pointing at `.warrants/blobs/p`
+    # acknowledge a defect in a different record — the receipt validated,
+    # the projection emitted, and `exclusions[]` carried the wrong
+    # coordinate as evidence (round 11).
+    acknowledged = _acknowledges(issues, "RECORD_UNREADABLE", src["path"])
+    envelope_acked = _acknowledges(issues, "MALFORMED_ENVELOPE", src["path"])
+    if parsed_ok and not envelope_ok:
+        if not envelope_acked:
+            _f(f, "MALFORMED_ENVELOPE_UNREPORTED", at)
+        elif src.get("computed_wid") is not None or src.get("id_sound") is not False:
+            _f(f, "UNREADABLE_WITH_IDENTITY_CLAIM", at)
+        return None
+    if envelope_ok and envelope_acked:
+        _f(f, "SPURIOUS_MALFORMED_ENVELOPE", at)
+    if not parsed_ok:
+        if not acknowledged:
+            _f(f, "RECORD_UNREADABLE_UNREPORTED", at)
+        else:
+            # An unparseable body has no derivable identity; leaving a WID
+            # behind would be an unverifiable residue over bytes nobody can
+            # read. Exclusion makes it harmless today, but the rule is
+            # cheaper than the exception.
+            if src.get("computed_wid") is not None or src.get("id_sound") is not False:
+                _f(f, "UNREADABLE_WITH_IDENTITY_CLAIM", at)
+        return None
+    if acknowledged:
+        _f(f, "SPURIOUS_RECORD_UNREADABLE", at)
+    return obj
+
+
+def _resolve_reason(f, obj, reason, rat):
+    """ptr must resolve inside the committed record bytes and hash to
+    reason_digest — the byte-level half of the reason contract. `obj` is the
+    envelope already parsed by _resolve_record (one CAS read per source)."""
+    if not isinstance(obj, dict):
         _f(f, "REASON_PTR_UNRESOLVABLE", rat)
         return
     body = obj.get("body")
@@ -788,19 +1220,204 @@ def _resolve_reason(f, cas, src, reason, rat):
     if not (isinstance(because, list) and idx < len(because)):
         _f(f, "REASON_PTR_UNRESOLVABLE", rat)
         return
+    committed = because[idx]
     try:
-        if sha256_hex(jcs(because[idx])) != reason["reason_digest"]:
+        if sha256_hex(jcs(committed)) != reason["reason_digest"]:
             _f(f, "REASON_DIGEST_MISMATCH", rat)
+            return
     except ValueError:
         _f(f, "REASON_DIGEST_MISMATCH", rat)
+        return
+    # The digest alone proves the bytes, not that the receipt's role fields
+    # describe them: a receipt could carry runtime "evil@v1" over a committed
+    # ski@v1 reason and the graph would assert the swap (round-6 PR review).
+    if not isinstance(committed, dict):
+        _f(f, "REASON_ROLE_MISMATCH", rat)
+        return
+    if (committed.get("kind") != reason["kind"]
+            or committed.get("runtime") != reason["runtime"]):
+        _f(f, "REASON_ROLE_MISMATCH", rat)
+        return
+    if committed.get("verdict") != reason["outcome"].get("claimed_verdict"):
+        _f(f, "REASON_CLAIM_MISMATCH", rat)
+    # Matching the bytes is not the same as being NORMATIVELY ALLOWED to be a
+    # check: `kind` and `runtime` were only string-compared, so a committed
+    # prose reason — or a committed check under an attacker-named runtime the
+    # receipt also declared in execution_policy — became a sigma:CheckRun.
+    # warrant SPEC §3 closes both: only `check` reasons carry a runtime, and
+    # the runtime registry is keyed by BODY version.
+    if committed.get("kind") != "check":
+        _f(f, "REASON_NOT_A_CHECK", rat)
+        return
+    version = body.get("warrant") if isinstance(body, dict) else None
+    allowed = RUNTIME_REGISTRY.get(version)
+    if allowed is None:
+        _f(f, "UNKNOWN_BODY_VERSION", rat)
+    elif committed.get("runtime") not in allowed:
+        _f(f, "RUNTIME_NOT_IN_REGISTRY", rat)
 
 
 # ------------------------------------------------- composed public verdict
 
-def validate_warrant_receipt(snapshot, receipt, cas=None) -> list:
+def available_blob_digests(core) -> set:
+    """Digests a check reference may legitimately resolve to.
+
+    Not "some source has this digest": the source must BE a blob, be loaded,
+    and carry no ERR judgement — otherwise a check could resolve to a README
+    (`other`), to a record, or to a blob the manifest simultaneously reports
+    as excluded, with the run claiming it used exactly that (re-gate P1-2).
+    One definition, used by both the verdict and the projection."""
+    out = set()
+    if not isinstance(core, dict) or not isinstance(core.get("sources"), list):
+        return out
+    for s in core["sources"]:
+        if not isinstance(s, dict) or s.get("kind") != "blob":
+            continue
+        if s.get("loaded") is not True:
+            # Defense in depth, and honestly labelled as such: no vector can
+            # isolate this clause today, because `loaded:false` already
+            # requires an ERR issue (UNLOADED_WITHOUT_ERR) and the clause
+            # below fires first. Removing it currently changes nothing —
+            # mutation-tested and stated rather than counted as covered.
+            continue
+        issues = s.get("issues")
+        if isinstance(issues, list) and any(
+                isinstance(x, dict) and x.get("severity") == "ERR" for x in issues):
+            continue
+        if isinstance(s.get("entry_digest"), str):
+            out.add(s["entry_digest"])
+    return out
+
+
+class _NotFreezable(Exception):
+    """Raised instead of silently sharing an object with the caller."""
+
+
+MAX_FREEZE_DEPTH = 64          # these contracts are shallow by construction
+MAX_FREEZE_NODES = 1000000     # every visited value AND every key is a node
+MAX_FREEZE_BYTES = 67108864    # 64 MiB of string payload; node count alone
+                               # bounds shape, not memory
+
+
+def _freeze(value, _depth=0, _active=None, _budget=None):
+    """A private detached copy, built from exact JSON built-ins only.
+
+    Never returns the original: the earlier version fell back to the input
+    when `deepcopy` raised, so isolation opened for exactly the hostile
+    inputs it exists for. Exact `type(x) is …` checks (not `isinstance`)
+    reject subclasses, the usual carrier of read-dependent behaviour.
+
+    Total by construction: exact `dict`/`list` values can still be cyclic or
+    deeper than the interpreter's recursion limit, and a `RecursionError`
+    escaping `project()` is a crash where the contract promises bounded
+    findings. Cycles are detected on the active path and depth/node budgets
+    are explicit; every refusal becomes `INPUT_NOT_FREEZABLE`.
+    """
+    if _active is None:
+        _active, _budget = set(), [MAX_FREEZE_NODES, MAX_FREEZE_BYTES]
+    # Charge BEFORE the primitive return: charging only containers made a
+    # million-element scalar list cost one node, so the declared ceiling
+    # never fired. Nodes bound shape; the byte budget bounds payload, which
+    # a node count alone cannot.
+    _budget[0] -= 1
+    if _budget[0] < 0:
+        raise _NotFreezable("over node budget")
+    t = type(value)
+    if t is str:
+        _budget[1] -= len(value.encode("utf-8", "surrogatepass"))
+        if _budget[1] < 0:
+            raise _NotFreezable("over byte budget")
+        return value
+    if value is None or t is bool or t is int:
+        return value
+    if t is not list and t is not dict:
+        raise _NotFreezable(repr(t))
+    if _depth >= MAX_FREEZE_DEPTH:
+        raise _NotFreezable("over depth budget")
+    ident = id(value)
+    if ident in _active:
+        # Defense in depth, labelled as unisolatable: with this clause removed
+        # a cycle still terminates on the depth budget above, so no vector can
+        # distinguish the two today. It is kept because it gives the precise
+        # reason and because it stays load-bearing if the depth budget is ever
+        # raised. Mutation-tested and stated, not counted as covered.
+        raise _NotFreezable("cyclic container")
+    _active.add(ident)
+    try:
+        if t is list:
+            return [_freeze(v, _depth + 1, _active, _budget) for v in value]
+        out = {}
+        for k, v in value.items():
+            if type(k) is not str:
+                raise _NotFreezable("non-string key")
+            # Keys are nodes and their bytes count too. Unisolatable by a
+            # vector today: any object wide enough to exhaust the budget
+            # through keys alone exhausts it through values first, since a
+            # dict entry always carries both. Kept so the accounting rule is
+            # complete and stated, not counted as covered.
+            _freeze(k, _depth + 1, _active, _budget)
+            out[k] = _freeze(v, _depth + 1, _active, _budget)
+        return out
+    finally:
+        _active.discard(ident)
+
+
+def validate_structure_only(snapshot, receipt, expected_version="0.4") -> list:
+    """Shape-only inspection with NO evidence bytes. Deliberately named so it
+    can never be mistaken for verification: record identity, envelope
+    completeness and reason binding are all byte-derived and are simply not
+    performed here. Its clean result means "nothing structurally wrong",
+    never "verified"."""
+    return _verdict(snapshot, receipt, None, expected_version, {},
+                    structural_only=True)
+
+
+def validate_warrant_receipt(snapshot, receipt, cas, expected_version="0.4",
+                             view=None) -> list:
     """THE public verdict tying receipt to snapshot: descriptor lookup, role
     check, exact universe<->sources bijection, per-source digests, then the
-    internal core invariants. Total over any parsed JSON values."""
+    internal core invariants. Total over any parsed JSON values.
+
+    `view` is an OUTPUT SINK ONLY. It receives a copy of the validated view
+    after the verdict and is never read during it: making the freeze and the
+    committed-reason derivation conditional on it let a caller change the
+    verdict by asking (or not asking) for diagnostics — with `view=None` an
+    impossible `matched` over a missing check blob was accepted, and the
+    input isolation was skipped entirely (core re-gate P1).
+    """
+    internal = {}
+    findings = _verdict(snapshot, receipt, cas, expected_version, internal)
+    if view is not None:
+        # clear before publishing: a reused sink must not keep keys from an
+        # earlier, successful verdict when this one returns early (P2)
+        view.clear()
+        view.update(internal)
+    return findings
+
+
+def _verdict(snapshot, receipt, cas, expected_version, view,
+             structural_only=False) -> list:
+    # Absence of evidence bytes is not evidence of correctness. Every
+    # byte-derived check — WarrantID re-derivation, envelope signature and
+    # reason completeness, the semantic reason binding — is skipped without a
+    # store, so a clean result would mean "nothing could be checked" while
+    # reading as "verified" (core re-gate P1).
+    if cas is None and not structural_only:
+        view.clear()
+        return [{"code": "CAS_REQUIRED", "severity": "ERR", "at": "/"}]
+    # Freeze the inputs BEFORE judging them, unconditionally.
+    try:
+        snapshot = _freeze(snapshot)
+        receipt = _freeze(receipt)
+    except (_NotFreezable, RecursionError):
+        # Fail closed: an input that cannot be detached is refused, never
+        # judged-then-shared. The view stays empty, so no consumer can
+        # mistake a partial freeze for a validated one.
+        view.clear()
+        return [{"code": "INPUT_NOT_FREEZABLE", "severity": "ERR", "at": "/"}]
+    view["snapshot"] = snapshot
+    view["receipt"] = receipt
+
     f = list(validate_snapshot(snapshot, cas))
     if not isinstance(receipt, dict):
         _f(f, "NOT_OBJECT", "/receipt")
@@ -811,8 +1428,25 @@ def validate_warrant_receipt(snapshot, receipt, cas=None) -> list:
     if set(receipt.keys()) != {"receipt", "core", "producer"}:
         _f(f, "SCHEMA_KEYS", "/receipt")
         return f
+    # `producer` is host-local — it carries no cross-implementation
+    # agreement — but "host-local" means "outside consensus identity", not
+    # "without a wire contract". A closed schema is claimed, so it is
+    # enforced (P2).
+    producer = receipt["producer"]
+    if not (isinstance(producer, dict)
+            and set(producer.keys()) == {"impl", "artifact_digest", "spec",
+                                         "report_digest", "local_notes"}
+            and isinstance(producer["impl"], str) and producer["impl"]
+            and (producer["artifact_digest"] is None
+                 or _is_hex64(producer["artifact_digest"]))
+            and isinstance(producer["spec"], str) and producer["spec"]
+            and _is_hex64(producer["report_digest"])
+            and isinstance(producer["local_notes"], list)
+            and all(isinstance(n, str) for n in producer["local_notes"])):
+        _f(f, "BAD_PRODUCER_SCHEMA", "/producer")
+
     core = receipt["core"]
-    core_f = validate_receipt_core(core, cas=cas)
+    core_f = validate_receipt_core(core, cas=cas, view=view)
     f.extend(core_f)
     if not isinstance(core, dict) or not isinstance(snapshot, dict):
         return f
@@ -826,27 +1460,107 @@ def validate_warrant_receipt(snapshot, receipt, cas=None) -> list:
         _f(f, "RECEIPT_DESCRIPTOR_MISSING", "/core/subroot_descriptor_digest")
         return f
     descriptor = {k: v for k, v in wrapper.items() if k != "digest"}
-    f.extend(validate_warrant_descriptor_role(descriptor, "0.4"))
+    view["descriptor"] = descriptor
+    view["core"] = core
+    f.extend(validate_warrant_descriptor_role(descriptor, expected_version))
 
     universe = descriptor.get("universe")
     if not isinstance(universe, list):
         return f
-    want = {}
+    # Bijection over PAIRS, not a dict keyed by path: building `want`/`have`
+    # as dicts made a duplicate path last-wins, so a receipt could carry a
+    # forged source beside the real one and still look bijective — the graph
+    # then asserted a blob absent from the snapshot (re-gate P1-1).
+    want = set()
     for e in universe:
         if isinstance(e, dict) and isinstance(e.get("path"), str):
-            want[e["path"]] = e.get("sha256")
-    have = {}
+            want.add((e["path"], e.get("sha256")))
+    have = set()
+    seen_paths = set()
     for s in core.get("sources", []) if isinstance(core.get("sources"), list) else []:
-        if isinstance(s, dict) and isinstance(s.get("path"), str):
-            have[s["path"]] = s.get("entry_digest")
-    for path in sorted(set(want) - set(have), key=path_sort_key):
+        if not (isinstance(s, dict) and isinstance(s.get("path"), str)):
+            continue
+        if s["path"] in seen_paths:
+            _f(f, "DUPLICATE_SOURCE_PATH", s["path"])
+        seen_paths.add(s["path"])
+        have.add((s["path"], s.get("entry_digest")))
+    want_paths = {p for p, _d in want}
+    have_paths = {p for p, _d in have}
+    for path in sorted(want_paths - have_paths, key=path_sort_key):
         _f(f, "SOURCE_MISSING_FOR_MEMBER", path)
-    for path in sorted(set(have) - set(want), key=path_sort_key):
+    for path in sorted(have_paths - want_paths, key=path_sort_key):
         _f(f, "SOURCE_NOT_IN_UNIVERSE", path)
-    for path in sorted(set(want) & set(have), key=path_sort_key):
-        if want[path] != have[path]:
+    for path, digest in sorted(have - want, key=lambda pd: path_sort_key(pd[0])):
+        if path in want_paths:
             _f(f, "SOURCE_DIGEST_MISMATCH", path)
+
+    # Role classification: `kind` was only enum-checked, so a receipt could
+    # relabel a committed record as "other" (record vanishes, graph asserts a
+    # generic entity) or a blob as "genesis" — the receipt choosing what the
+    # graph asserts or omits. The store layout DERIVES the role; the receipt
+    # only reports it, and disagreement is a finding.
+    prefix = descriptor.get("prefix")
+    if not isinstance(prefix, str):
+        return f
+    for s in core.get("sources", []) if isinstance(core.get("sources"), list) else []:
+        if not (isinstance(s, dict) and isinstance(s.get("path"), str)):
+            continue
+        path = s["path"]
+        if path not in want_paths:
+            continue  # already reported as SOURCE_NOT_IN_UNIVERSE
+        derived_kind, derived_wid = classify_warrant_source(path, prefix)
+        if s.get("kind") != derived_kind:
+            _f(f, "SOURCE_KIND_MISMATCH", path)
+        elif derived_kind == "record" and s.get("claimed_wid") != derived_wid:
+            # claimed_wid is a *claim read off the filename*, not free text
+            _f(f, "CLAIMED_WID_NOT_PATH", path)
+
+    # A re-execution that RAN must have had its check blob to run: warrant
+    # SPEC §6 resolves the check as a blob, and §6(7) keeps "re-ran" and
+    # "could not run" observationally distinct. Claiming matched/mismatched
+    # over a blob absent from this subroot is an impossible verdict.
+    present = available_blob_digests(core)
+    committed_by_path = view.get("committed", {})
+    for s in core.get("sources", []) if isinstance(core.get("sources"), list) else []:
+        if not (isinstance(s, dict) and s.get("kind") == "record"):
+            continue
+        because = committed_by_path.get(s.get("path"), [])
+        for reason in s.get("reasons", []) if isinstance(s.get("reasons"), list) else []:
+            if not isinstance(reason, dict):
+                continue
+            outcome = reason.get("outcome")
+            if not isinstance(outcome, dict) or outcome.get("re_execution") not in (
+                    "matched", "mismatched"):
+                continue
+            try:
+                idx = int(str(reason.get("ptr", "")).rsplit("/", 1)[1])
+            except (ValueError, IndexError):
+                continue
+            committed = because[idx] if idx < len(because) else None
+            if isinstance(committed, dict) and committed.get("check") not in present:
+                _f(f, "CHECK_BLOB_ABSENT", "%s%s" % (s.get("path"), reason.get("ptr")))
     return f
+
+
+def classify_warrant_source(path, prefix):
+    """(kind, claimed_wid) derived from the Warrant store layout alone.
+
+    `records/<hex64>.json` → record with that WarrantID claim; a non-wid-shaped
+    name in `records/` is still a record, with a null claim. `blobs/*` → blob,
+    `genesis.json` → genesis, anything else under the prefix → other.
+    """
+    if not path.startswith(prefix):
+        return "other", None
+    rest = path[len(prefix):]
+    if rest == "genesis.json":
+        return "genesis", None
+    if rest.startswith("records/"):
+        name = rest[len("records/"):]
+        stem = name[:-len(".json")] if name.endswith(".json") else None
+        return "record", (stem if _is_hex64(stem) else None)
+    if rest.startswith("blobs/"):
+        return "blob", None
+    return "other", None
 
 
 # ------------------------------------------------------------------ harness
@@ -896,10 +1610,24 @@ def check_has(name, findings, *codes):
 
 # ------------------------------------------------------------------ fixtures
 
+def signature_issues(entries):
+    """The WARN occurrences an honest receipt owes for signatures it reports
+    as not verifying. Fixture signatures here are synthetic placeholders, so
+    claiming they verified would assert what this repo cannot back."""
+    return [{"code": "INVALID_SIGNATURE", "severity": "WARN",
+             "at": {"kind": "json-pointer", "value": "/sigs/%d" % i}}
+            for i, _e in enumerate(entries)]
+
+
 def _fixture():
     """A fully valid (snapshot, receipt, cas) triple the mutation vectors edit."""
-    reason_obj = {"kind": "check", "runtime": "ski@v1", "check": "a" * 64,
+    check_bytes = b"policy"           # the blob sealed at .warrants/blobs/p
+    reason_obj = {"kind": "check", "runtime": "ski@v1",
+                  "check": sha256_hex(check_bytes),
                   "verdict": "pass", "transcript": "b" * 64}
+    # body "warrant": "0.2" is the BODY-FORMAT version (ski@v1 era), while the
+    # contract version "0.4" below is the SPEC document revision — warrant
+    # versions bodies and the document independently (SPEC "Versioning").
     record = {"body": {"warrant": "0.2", "decision": "accept", "subject": {},
                        "under": [], "because": [reason_obj], "evidence": [],
                        "actor": {"id": "x"}, "prior": [], "ts": 1},
@@ -922,9 +1650,18 @@ def _fixture():
         {"kind": "record", "path": ".warrants/records/r.json",
          "entry_digest": by_path[".warrants/records/r.json"], "loaded": True,
          "claimed_wid": None, "computed_wid": sha256_hex(jcs(record["body"])),
-         "id_sound": False, "settlement": [], "signatures": [],
-         "issues": [{"code": "ID_UNSOUND", "severity": "ERR",
-                     "at": {"kind": "path", "value": ".warrants/records/r.json"}}],
+         "id_sound": False, "settlement": [],
+         # the receipt must account for every signature the envelope carries
+         "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
+                         "key": k, "valid": False, "binding": "unverified"}
+                        for d, m, a, k in envelope_signature_entries(record)[0]],
+         "issues": sorted(
+             [{"code": "ID_UNSOUND", "severity": "ERR",
+               "at": {"kind": "path", "value": ".warrants/records/r.json"}},
+              {"code": "NO_VALID_ACTOR_SIGNATURE", "severity": "ERR",
+               "at": {"kind": "path", "value": ".warrants/records/r.json"}}]
+             + signature_issues(envelope_signature_entries(record)[0]),
+             key=lambda x: jcs(x)),
          "reasons": [{"ptr": "/because/0", "kind": "check", "runtime": "ski@v1",
                       "reason_digest": reason_digest,
                       "outcome": {"re_execution": "matched", "claimed_verdict": "pass",
@@ -938,7 +1675,9 @@ def _fixture():
                 {"runtime": "ski@v1", "semantics": "sigma-book-i@v0.5",
                  "semantics_digest": sha256_hex(b"book1"), "budget_unit": "atp",
                  "ceiling": 1000}]},
-            "ok": False, "errors": 1, "warnings": 0, "global_issues": [],
+            "ok": False, "errors": 2,
+            "warnings": len(envelope_signature_entries(record)[0]),
+            "global_issues": [],
             "sources": sources}
     receipt = {"receipt": "warrant.verification-receipt@v0", "core": core,
                "producer": {"impl": "model", "artifact_digest": None, "spec": "0.4",
@@ -991,6 +1730,17 @@ def run_vectors():
         obj, f = parse_strict(raw)
         check_has("parse_strict refuses %s" % code, f, code)
 
+    # the byte layer is depth-bounded, like the freeze layer
+    check_equal("deeply nested JSON refuses instead of crashing",
+                [x["code"] for x in parse_strict(b"[" * 500 + b"]" * 500)[1]],
+                ["OVER_DEPTH"])
+    check_equal("...and so does a deep object",
+                [x["code"] for x in parse_strict(
+                    b'{"a":' * 300 + b"1" + b"}" * 300)[1]],
+                ["OVER_DEPTH"])
+    check_true("jcs itself refuses over-deep values",
+               lambda: _ve(lambda: jcs(_deep_list(MAX_FREEZE_DEPTH + 5))))
+
     # --- total validators on hostile shapes (Codex round-5 crashers)
     hostile = [None, 7, "x", [], [7],
                {"snapshot": "ecosystem.snapshot@v0", "bundle_root": None,
@@ -1008,9 +1758,9 @@ def run_vectors():
             validate_snapshot(v)
             validate_snapshot(v, {})
             validate_receipt_core(v)
-            validate_warrant_receipt(v, v)
+            validate_warrant_receipt(v, v, {})
             validate_warrant_receipt({}, {"receipt": "warrant.verification-receipt@v0",
-                                          "core": v, "producer": {}})
+                                          "core": v, "producer": {}}, {})
         return True
     check_true("hostile shapes -> findings, never exceptions", _no_crash)
 
@@ -1133,6 +1883,234 @@ def run_vectors():
                      .update(reason_digest="9" * 64))
     check_has("wrong reason digest -> REASON_DIGEST_MISMATCH",
               validate_warrant_receipt(snap, baddig, cas), "REASON_DIGEST_MISMATCH")
+    # the output sink must never change the verdict
+    def _sinks_agree(sn, rc, cs):
+        a = [x["code"] for x in validate_warrant_receipt(sn, rc, cs)]
+        b = [x["code"] for x in validate_warrant_receipt(sn, rc, cs, view={})]
+        sink = {}
+        c = [x["code"] for x in validate_warrant_receipt(sn, rc, cs, view=sink)]
+        return a == b == c
+    check_true("view=None, view={} and a populated sink agree",
+               lambda: _sinks_agree(snap, receipt, cas))
+    # the case that actually exposed the defect: a matched reason whose
+    # check blob is absent — decided only by the committed-reason derivation
+    no_blob = _mutate(receipt, lambda r: r["core"]["sources"].pop(0))
+    check_true("...including where the check-blob binding decides the verdict",
+               lambda: _sinks_agree(snap, no_blob, cas)
+               and any(x["code"] == "CHECK_BLOB_ABSENT"
+                       for x in validate_warrant_receipt(snap, no_blob, cas)))
+
+    # `loaded` is derived from the store, not chosen by the producer
+    fake_unread = _mutate(receipt, lambda r: (
+        r["core"]["sources"][1].update(loaded=False),
+        r["core"]["sources"][1].__setitem__("issues", sorted(
+            r["core"]["sources"][1]["issues"] + [
+                {"code": "RECORD_UNREADABLE", "severity": "ERR",
+                 "at": {"kind": "path", "value": r["core"]["sources"][1]["path"]}}],
+            key=lambda x: jcs(x))),
+        r["core"].update(ok=False, errors=r["core"]["errors"] + 1)))
+    check_true("a fabricated 'unreadable' record over readable bytes is caught",
+               lambda: any(x["code"] == "LOADED_MISREPORTED"
+                           for x in validate_warrant_receipt(snap, fake_unread, cas)))
+
+    # an honest inaccessible member: the store really lacks it
+    partial_cas = {k: v for k, v in cas.items()
+                   if k != receipt["core"]["sources"][1]["entry_digest"]}
+    honest_absent = _mutate(receipt, lambda r: (
+        r["core"]["sources"][1].update(loaded=False),
+        r["core"]["sources"][1].__setitem__("issues", sorted(
+            r["core"]["sources"][1]["issues"] + [
+                {"code": "RECORD_UNREADABLE", "severity": "ERR",
+                 "at": {"kind": "path", "value": r["core"]["sources"][1]["path"]}}],
+            key=lambda x: jcs(x))),
+        r["core"].update(ok=False, errors=r["core"]["errors"] + 1)))
+    codes_absent = [x["code"] for x in
+                    validate_warrant_receipt(snap, honest_absent, partial_cas)]
+    check_true("a genuinely inaccessible member is accepted as unloaded",
+               lambda: "LOADED_MISREPORTED" not in codes_absent)
+    check_true("...and its absence is still reported",
+               lambda: any(c in ("CAS_UNRESOLVABLE",) for c in codes_absent))
+
+    # the mirror: claiming loaded over bytes the store does not have
+    claim_loaded = _mutate(receipt, lambda r: None)
+    check_true("claiming loaded over missing bytes is caught",
+               lambda: any(x["code"] == "LOADED_MISREPORTED"
+                           for x in validate_warrant_receipt(snap, claim_loaded,
+                                                             partial_cas)))
+
+    # a blob member gets the same treatment, not only records
+    blob_lie = _mutate(receipt, lambda r: (
+        r["core"]["sources"][0].update(loaded=False),
+        r["core"]["sources"][0].__setitem__("issues", [
+            {"code": "BLOB_UNREADABLE", "severity": "ERR",
+             "at": {"kind": "path", "value": r["core"]["sources"][0]["path"]}}]),
+        r["core"].update(ok=False, errors=r["core"]["errors"] + 1)))
+    check_true("the rule covers blob/genesis/other members too",
+               lambda: any(x["code"] == "LOADED_MISREPORTED"
+                           for x in validate_warrant_receipt(snap, blob_lie, cas)))
+
+    # producer is host-local but still has a wire contract
+    for label, mutate in [
+            ("a non-object producer", lambda r: r.update(producer=7)),
+            ("an empty producer", lambda r: r.update(producer={})),
+            ("an unknown producer member",
+             lambda r: r["producer"].update(extra="x")),
+            ("a malformed report digest",
+             lambda r: r["producer"].update(report_digest="nope"))]:
+        bad_prod = _mutate(receipt, mutate)
+        check_true("producer schema: %s is refused" % label,
+                   lambda bad_prod=bad_prod: any(
+                       x["code"] == "BAD_PRODUCER_SCHEMA"
+                       for x in validate_warrant_receipt(snap, bad_prod, cas)))
+
+    # absence of evidence bytes is never a clean verdict
+    resealed = _mutate(receipt, lambda r: None)
+    reason2 = {"kind": "check", "runtime": "ski@v1",
+               "check": sha256_hex(b"policy"), "verdict": "pass",
+               "transcript": "b" * 64}
+    body2 = {"warrant": "0.2", "decision": "accept", "subject": {}, "under": [],
+             "because": [reason2], "evidence": [], "actor": {"id": "x"},
+             "prior": [], "ts": 2}                      # ts 1 -> 2
+    rec2 = {"body": body2,
+            "sigs": [{"actor": "x", "key": "c" * 64, "sig": "d" * 128}]}
+    files2 = {".warrants/records/r.json": jcs(rec2),
+              ".warrants/blobs/p": b"policy"}
+    cas2 = {sha256_hex(v): v for v in files2.values()}
+    uni2 = seal_universe(files2)
+    d2 = subroot_descriptor("warrant",
+                            {"name": "warrant", "version": "0.4",
+                             "spec_digest": sha256_hex(b"spec")},
+                            ".warrants/", uni2)
+    snap2 = snapshot_object([d2], [])
+    resealed["core"]["subroot_descriptor_digest"] = subroot_descriptor_digest(d2)
+    bp2 = {e["path"]: e["sha256"] for e in uni2}
+    for src in resealed["core"]["sources"]:
+        src["entry_digest"] = bp2[src["path"]]      # resealed, but the receipt
+                                                    # keeps the OLD WarrantID
+    check_equal("a resealed changed body is caught WITH evidence bytes",
+                [x["code"] for x in
+                 validate_warrant_receipt(snap2, resealed, cas2)
+                 if x["code"] == "COMPUTED_WID_MISMATCH"],
+                ["COMPUTED_WID_MISMATCH"])
+    check_equal("...and omitting the store is refused, not accepted",
+                [x["code"] for x in
+                 validate_warrant_receipt(snap2, resealed, None)],
+                ["CAS_REQUIRED"])
+    check_true("...while an empty store reports the missing bytes",
+               lambda: any(x["code"] in ("CAS_UNRESOLVABLE", "RECORD_UNRESOLVABLE")
+                           for x in validate_warrant_receipt(snap2, resealed, {})))
+    check_true("structural-only inspection is separately named",
+               lambda: "CAS_REQUIRED" not in
+               [x["code"] for x in validate_structure_only(snap2, resealed)])
+
+    # a reused sink must not keep a previous successful view
+    sink = {}
+    validate_warrant_receipt(snap, receipt, cas, view=sink)
+    check_true("a successful verdict populates the sink", lambda: "core" in sink)
+
+    class Uncopyable2(dict):
+        def __deepcopy__(self, memo):
+            raise RuntimeError("nope")
+    validate_warrant_receipt(snap, Uncopyable2(receipt), cas, view=sink)
+    check_equal("a refused verdict leaves no stale view behind", sink, {})
+
+    # the CAS failure path must not re-execute hostile code
+    class HostileRepr(Exception):
+        def __repr__(self):
+            raise RuntimeError("repr is code")
+
+    class ReprCAS(dict):
+        def __getitem__(self, k):
+            raise HostileRepr()
+
+    class HostileBytes(bytes):
+        def __bytes__(self):
+            raise RuntimeError("__bytes__ is code")
+
+    class SubclassCAS(dict):
+        def __getitem__(self, k):
+            return HostileBytes(b"x")
+
+    for label, store in [("an exception with a hostile __repr__", ReprCAS(cas)),
+                         ("a bytes subclass with a hostile __bytes__",
+                          SubclassCAS(cas))]:
+        check_true("CAS failure path is bounded: %s" % label,
+                   lambda store=store: all(
+                       isinstance(x, dict)
+                       for x in validate_warrant_receipt(snap, receipt, store)))
+
+    # the freeze is unconditional — the model suite must prove it too, not
+    # only the projector's TOCTOU vectors
+    class UncopyableReceipt(dict):
+        def __deepcopy__(self, memo):
+            raise RuntimeError("refuses to be copied")
+    check_equal("an uncopyable receipt is refused with no sink at all",
+                [x["code"] for x in
+                 validate_warrant_receipt(snap, UncopyableReceipt(receipt), cas)],
+                ["INPUT_NOT_FREEZABLE"])
+    check_equal("...and identically with a sink",
+                [x["code"] for x in
+                 validate_warrant_receipt(snap, UncopyableReceipt(receipt), cas,
+                                          view={})],
+                ["INPUT_NOT_FREEZABLE"])
+
+    # the CAS boundary is bounded: a hostile resolver yields findings, not
+    # host exceptions
+    class RaisingCAS(dict):
+        def __getitem__(self, k):
+            raise RuntimeError("resolver failed")
+
+    class StringCAS(dict):
+        def __getitem__(self, k):
+            return "not bytes"
+
+    for label, store in [("a raising resolver", RaisingCAS(cas)),
+                         ("a non-bytes value", StringCAS(cas))]:
+        check_true("CAS boundary bounded: %s" % label,
+                   lambda store=store: all(
+                       isinstance(x, dict) for x in
+                       validate_warrant_receipt(snap, receipt, store)))
+
+    swapped = _mutate(receipt, lambda r: r["core"]["sources"][1]["reasons"][0]
+                      .update(runtime="evil@v1"))
+    check_has("runtime swapped over committed ski@v1 reason -> REASON_ROLE_MISMATCH",
+              validate_warrant_receipt(snap, swapped, cas), "REASON_ROLE_MISMATCH")
+    lied = _mutate(receipt, lambda r: r["core"]["sources"][1]["reasons"][0]
+                   ["outcome"].update(claimed_verdict="fail", observed_verdict="fail"))
+    check_has("claimed verdict differs from committed reason -> REASON_CLAIM_MISMATCH",
+              validate_warrant_receipt(snap, lied, cas), "REASON_CLAIM_MISMATCH")
+
+    # role derived from the store layout, not reported by the receipt
+    check_equal("classifier: records/<wid>.json",
+                classify_warrant_source(".w/records/%s.json" % ("a" * 64), ".w/"),
+                ("record", "a" * 64))
+    check_equal("classifier: non-wid record name claims nothing",
+                classify_warrant_source(".w/records/notes.json", ".w/"),
+                ("record", None))
+    check_equal("classifier: blobs/genesis/other",
+                [classify_warrant_source(".w/blobs/x", ".w/")[0],
+                 classify_warrant_source(".w/genesis.json", ".w/")[0],
+                 classify_warrant_source(".w/README", ".w/")[0]],
+                ["blob", "genesis", "other"])
+
+    def _relabel(r, idx, kind):
+        s = r["core"]["sources"][idx]
+        for k in list(s):
+            if k not in SOURCE_BASE_KEYS:
+                del s[k]
+        s["kind"] = kind
+    rec_as_other = _mutate(receipt, lambda r: _relabel(r, 1, "other"))
+    check_has("committed record relabelled 'other' -> SOURCE_KIND_MISMATCH",
+              validate_warrant_receipt(snap, rec_as_other, cas),
+              "SOURCE_KIND_MISMATCH")
+    blob_as_genesis = _mutate(receipt, lambda r: _relabel(r, 0, "genesis"))
+    check_has("blob relabelled 'genesis' -> SOURCE_KIND_MISMATCH",
+              validate_warrant_receipt(snap, blob_as_genesis, cas),
+              "SOURCE_KIND_MISMATCH")
+    wid_lie = _mutate(receipt, lambda r: r["core"]["sources"][1].update(
+        claimed_wid="b" * 64, id_sound=False))
+    check_has("claimed_wid not derived from the filename -> CLAIMED_WID_NOT_PATH",
+              validate_warrant_receipt(snap, wid_lie, cas), "CLAIMED_WID_NOT_PATH")
 
     # --- grade-aware severity + settlement at base
     setl = [{"jurisdiction": "a" * 64, "active": True,
@@ -1208,6 +2186,16 @@ def run_vectors():
             parse_strict(bytes(rng.randrange(256) for _ in range(rng.randrange(40))))
         return True
     check_true("fuzz: 300 hostile shapes + 100 random byte strings, no exceptions", _fuzz)
+
+
+def _deep_list(depth):
+    out = []
+    cur = out
+    for _ in range(depth):
+        nxt = []
+        cur.append(nxt)
+        cur = nxt
+    return out
 
 
 def _ve(fn):
