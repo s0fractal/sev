@@ -178,7 +178,19 @@ no governance (a bundle claims nothing on members' behalf); no
 registry/service (a snapshot is a file; SCITT-shaped concerns stay
 deliberately unclaimed).
 
-## 7. Open questions
+## 7. v0 freeze candidate (round-6 R6)
+
+Exit criterion from the review spiral, adopted: **a round with zero P1
+findings freezes the core**. Candidate frozen surface — the minimum a second
+implementation would target: the logical-path/prefix contract (§4), the
+subroot descriptor + domain-separated digest (§1), the snapshot object with
+its normative array orders and self-hash (§2), and `parse_strict`'s refusal
+set. Everything else (expectation objects §3, `unclaimed` placement details,
+contract.spec_digest policy) is an extension point until separately frozen.
+The freeze itself is a maintainer act after the next clean gate — this
+section only names the candidate.
+
+## 8. Open questions
 
 1. `contract.spec_digest` — **resolved in rev 3, split by layer**: the
    ecosystem format keeps it nullable (a null is honest for protocols without

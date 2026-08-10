@@ -32,14 +32,20 @@ Sealed Ecosystem Bundle  (ecosystem.snapshot@v0)
 | [`profiles/PROV-EVIDENCE-VIEW.md`](profiles/PROV-EVIDENCE-VIEW.md) | `sev@v0` — the projection profile, plus the running review ledger (5 adversarial rounds applied) |
 | [`proposals/WARRANT-VERIFICATION-RECEIPT.md`](proposals/WARRANT-VERIFICATION-RECEIPT.md) | `warrant.verification-receipt@v0` — **SEV-originated design candidate for Warrant; not a Warrant contract** (see Ownership below) |
 | [`model/snapshot_model.py`](model/snapshot_model.py) | Executable reference model: raw-byte strict parsers, total validators, composed receipt verdict, 56 self-vectors |
-| `conformance/` | Reserved for frozen cross-implementation vectors (empty until a second implementation exists) |
-| `reviews/` | Adversarial review rounds and responses |
+| [`model/sev_projector.py`](model/sev_projector.py) | Projector MVP (round-6 R4): verified (snapshot, receipt) → canonical N-Quads + view-manifest + loss_manifest; Warrant quadrant only; refuses on any verdict finding |
+| [`conformance/`](conformance/) | Language-neutral fixtures (base64 bytes + expected codes) + replay harness — a second implementation consumes the JSON, not the Python |
+| [`reviews/`](reviews/) | Adversarial review rounds 1–6 with dispositions; rounds 1–5 predate the repo and are marked as reconstructed (see `reviews/README.md`); from round 6, a review without an exact SHA is invalid |
 
-## Run the model
+## Run
 
 ```bash
-python3 model/snapshot_model.py   # stdlib only; exit status is the verdict
+python3 model/snapshot_model.py   # 56 vectors; exit status is the verdict
+python3 model/sev_projector.py    # end-to-end projection, cross-process determinism
+python3 conformance/replay.py     # language-neutral fixture replay
 ```
+
+CI (`.github/workflows/model.yml`) runs all three on every push and PR —
+exit-status honesty is a gate, not a habit.
 
 The model passes its current 56 vectors. That means exactly: *56 stated
 claims are checked honestly* (the harness distinguishes `True` from truthy,

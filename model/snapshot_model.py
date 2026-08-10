@@ -189,8 +189,14 @@ def parse_snapshot(raw, cas=None) -> tuple:
     return obj, f
 
 
-def parse_receipt(raw) -> tuple:
-    return parse_strict(raw)
+def parse_receipt(raw, snapshot=None, cas=None) -> tuple:
+    """Symmetric with parse_snapshot: bytes in, findings out. With a
+    snapshot supplied, runs the full composed verdict; without one, only the
+    byte boundary (a receipt cannot be semantically judged in isolation)."""
+    obj, f = parse_strict(raw)
+    if obj is not None and not f and snapshot is not None:
+        f = validate_warrant_receipt(snapshot, obj, cas)
+    return obj, f
 
 
 # ------------------------------------------------------------- logical paths
@@ -797,7 +803,7 @@ def _resolve_reason(f, cas, src, reason, rat):
 
 # ------------------------------------------------- composed public verdict
 
-def validate_warrant_receipt(snapshot, receipt, cas=None) -> list:
+def validate_warrant_receipt(snapshot, receipt, cas=None, expected_version="0.4") -> list:
     """THE public verdict tying receipt to snapshot: descriptor lookup, role
     check, exact universe<->sources bijection, per-source digests, then the
     internal core invariants. Total over any parsed JSON values."""
@@ -826,7 +832,7 @@ def validate_warrant_receipt(snapshot, receipt, cas=None) -> list:
         _f(f, "RECEIPT_DESCRIPTOR_MISSING", "/core/subroot_descriptor_digest")
         return f
     descriptor = {k: v for k, v in wrapper.items() if k != "digest"}
-    f.extend(validate_warrant_descriptor_role(descriptor, "0.4"))
+    f.extend(validate_warrant_descriptor_role(descriptor, expected_version))
 
     universe = descriptor.get("universe")
     if not isinstance(universe, list):
@@ -900,6 +906,9 @@ def _fixture():
     """A fully valid (snapshot, receipt, cas) triple the mutation vectors edit."""
     reason_obj = {"kind": "check", "runtime": "ski@v1", "check": "a" * 64,
                   "verdict": "pass", "transcript": "b" * 64}
+    # body "warrant": "0.2" is the BODY-FORMAT version (ski@v1 era), while the
+    # contract version "0.4" below is the SPEC document revision — warrant
+    # versions bodies and the document independently (SPEC "Versioning").
     record = {"body": {"warrant": "0.2", "decision": "accept", "subject": {},
                        "under": [], "because": [reason_obj], "evidence": [],
                        "actor": {"id": "x"}, "prior": [], "ts": 1},

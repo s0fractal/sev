@@ -1,0 +1,13 @@
+name: model
+on: [push, pull_request]
+jobs:
+  vectors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: snapshot model (56 vectors, exit status is the verdict)
+        run: python3 model/snapshot_model.py
+      - name: sev projector MVP (end-to-end, cross-process determinism)
+        run: python3 model/sev_projector.py
+      - name: conformance fixtures replay byte-identically
+        run: python3 conformance/replay.py
