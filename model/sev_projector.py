@@ -102,6 +102,15 @@ def iri_blob(digest):
     return "urn:wrt:blob:" + digest
 
 
+def iri_source(path, entry_digest):
+    """Source OCCURRENCE identity — the receipt's own `(path, entry_digest)`.
+    Two paths holding identical bytes are two sources; keying a node on the
+    digest alone merged them into one node with two `sourceKind` values,
+    losing path and multiplicity (re-gate P1-2)."""
+    return "urn:sev:source:" + sm.sha256_hex(
+        path.encode("utf-8") + b"\x00" + entry_digest.encode("ascii"))
+
+
 def iri_run(wid, ptr, reason_digest):
     material = (wid.encode() + b"\x00" + ptr.encode() + b"\x00"
                 + reason_digest.encode())
@@ -175,24 +184,37 @@ def project(snapshot, receipt, cas) -> tuple:
             _exclude(src, "NOT_LOADED")
             continue
         if src["kind"] != "record":
-            # Every non-record universe member gets a generic source entity,
-            # so "projected" means projected. Rev 1 skipped genesis/other
-            # silently while counting them projected — the same
-            # silent-truncation class on the other union branch (P1-3).
-            node = iri_blob(src["entry_digest"])
-            g.add(node, RDF_TYPE, _iri(PROV + "Entity"))
+            # Every non-record universe member gets a source-occurrence
+            # entity, so "projected" means projected. Occurrence identity is
+            # (path, entry_digest); the content entity keyed by digest alone
+            # is linked, not conflated — two paths with identical bytes are
+            # two occurrences of one content.
+            node = iri_source(src["path"], src["entry_digest"])
+            g.add(node, RDF_TYPE, _iri(SEV + "Source"))
+            g.add(node, SEV + "path", _lit(src["path"]))
             g.add(node, SEV + "sourceKind", _lit(src["kind"]))
             g.add(node, SEV + "entryDigest", _lit(src["entry_digest"]))
+            content = iri_blob(src["entry_digest"])
+            g.add(content, RDF_TYPE, _iri(PROV + "Entity"))
+            g.add(node, PROV + "specializationOf", _iri(content))
             continue
         if src["id_sound"] is not True:
             _exclude(src, "ID_UNSOUND")
             continue  # R4 rule: only id-sound, ERR-free records become nodes
         wid = src["computed_wid"]
         rec, filing = iri_record(wid), iri_filing(src["entry_digest"])
+        occ = iri_source(src["path"], src["entry_digest"])
         g.add(rec, RDF_TYPE, _iri(WRT + "Warrant"))
         g.add(rec, PROV + "wasGeneratedBy", _iri(filing))
         g.add(filing, RDF_TYPE, _iri(WRT + "Filing"))
         g.add(rec, SEV + "entryDigest", _lit(src["entry_digest"]))
+        # the same record content may be sealed at several paths: each path
+        # is its own source occurrence pointing at the one record identity
+        g.add(occ, RDF_TYPE, _iri(SEV + "Source"))
+        g.add(occ, SEV + "path", _lit(src["path"]))
+        g.add(occ, SEV + "sourceKind", _lit("record"))
+        g.add(occ, SEV + "entryDigest", _lit(src["entry_digest"]))
+        g.add(occ, PROV + "specializationOf", _iri(rec))
         for reason in src["reasons"]:
             run = iri_run(wid, reason["ptr"], reason["reason_digest"])
             o = reason["outcome"]
@@ -260,11 +282,15 @@ def project(snapshot, receipt, cas) -> tuple:
 
 # ------------------------------------------------------------------ fixture
 
-def fixture(extra_files=None):
+def fixture(extra_files=None, misfiled_as=None):
     """An id-sound, ERR-free end-to-end triple (snapshot, receipt, cas).
 
     `extra_files` adds further universe members (paths under the prefix); the
     receipt reports each with the kind the store layout implies.
+    `misfiled_as` seals the record under `records/<that hex64>.json`, i.e. an
+    honestly id-unsound record: the filename claims one WarrantID while the
+    body canonicalizes to another. This is the ONLY way to model id-unsound
+    now that both the filename claim and the body hash are derived.
     """
     reason_obj = {"kind": "check", "runtime": "ski@v1", "check": "a" * 64,
                   "verdict": "pass", "transcript": "b" * 64}
@@ -275,7 +301,8 @@ def fixture(extra_files=None):
               "sigs": [{"actor": "x", "key": "c" * 64, "sig": "d" * 128}]}
     wid = sm.sha256_hex(sm.jcs(body))
     record_bytes = sm.jcs(record)
-    files = {".warrants/records/%s.json" % wid: record_bytes,
+    filed_as = misfiled_as or wid
+    files = {".warrants/records/%s.json" % filed_as: record_bytes,
              ".warrants/blobs/p": b"policy"}
     files.update(extra_files or {})
     cas = {sm.sha256_hex(v): v for v in files.values()}
@@ -285,13 +312,16 @@ def fixture(extra_files=None):
     d = sm.subroot_descriptor("warrant", contract, ".warrants/", uni)
     snap = sm.snapshot_object([d], [])
     by_path = {e["path"]: e["sha256"] for e in uni}
-    rec_path = ".warrants/records/%s.json" % wid
+    rec_path = ".warrants/records/%s.json" % filed_as
     sources = sorted([
         {"kind": "blob", "path": ".warrants/blobs/p",
          "entry_digest": by_path[".warrants/blobs/p"], "loaded": True, "issues": []},
         {"kind": "record", "path": rec_path, "entry_digest": by_path[rec_path],
-         "loaded": True, "claimed_wid": wid, "computed_wid": wid,
-         "id_sound": True, "settlement": [], "signatures": [], "issues": [],
+         "loaded": True, "claimed_wid": filed_as, "computed_wid": wid,
+         "id_sound": filed_as == wid, "settlement": [], "signatures": [],
+         "issues": ([] if filed_as == wid else
+                    [{"code": "ID_UNSOUND", "severity": "ERR",
+                      "at": {"kind": "path", "value": rec_path}}]),
          "reasons": [{"ptr": "/because/0", "kind": "check", "runtime": "ski@v1",
                       "reason_digest": sm.sha256_hex(sm.jcs(reason_obj)),
                       "outcome": {"re_execution": "matched",
@@ -309,8 +339,8 @@ def fixture(extra_files=None):
                 {"runtime": "ski@v1", "semantics": "sigma-book-i@v0.5",
                  "semantics_digest": sm.sha256_hex(b"book1"),
                  "budget_unit": "atp", "ceiling": 1000}]},
-            "ok": True, "errors": 0, "warnings": 0, "global_issues": [],
-            "sources": sources}
+            "ok": filed_as == wid, "errors": 0 if filed_as == wid else 1,
+            "warnings": 0, "global_issues": [], "sources": sources}
     receipt = {"receipt": "warrant.verification-receipt@v0", "core": core,
                "producer": {"impl": "sev-fixture", "artifact_digest": None,
                             "spec": "0.4", "report_digest": "f" * 64,
@@ -408,16 +438,10 @@ def run_vectors():
                   lambda: not any(b < 0x20 and b != 0x0A for b in nq))
 
     # round-6 PR review, P1-2: honest negative receipt -> truthful manifest
-    def _negative(r):
-        # An honest id-unsound record: the filename's claim stands (it must,
-        # the classifier derives it) while the body canonicalizes elsewhere.
-        src = r["core"]["sources"][1]
-        src.update(computed_wid="b" * 64, id_sound=False,
-                   issues=[{"code": "ID_UNSOUND", "severity": "ERR",
-                            "at": {"kind": "path", "value": src["path"]}}])
-        r["core"].update(ok=False, errors=1)
-    snap4, receipt4, cas4 = fixture()
-    _negative(receipt4)
+    # An honest id-unsound record: filed under one WarrantID, body hashes to
+    # another. Both halves are now derived (filename claim + body re-hash),
+    # so this is the only shape that can be id-unsound without lying.
+    snap4, receipt4, cas4 = fixture(misfiled_as="b" * 64)
     res4, f4 = project(snap4, receipt4, cas4)
     sm.check_equal("negative receipt still projects (an honest ERR is evidence)",
                    f4, [])
@@ -451,11 +475,11 @@ def run_vectors():
     def _two_occurrences(r):
         src = r["core"]["sources"][1]
         at = {"kind": "path", "value": src["path"]}
-        src.update(computed_wid="b" * 64, id_sound=False, issues=[
+        src["issues"] = [
             {"code": "ID_UNSOUND", "severity": "ERR", "at": dict(at, occurrence=0)},
-            {"code": "ID_UNSOUND", "severity": "ERR", "at": dict(at, occurrence=1)}])
+            {"code": "ID_UNSOUND", "severity": "ERR", "at": dict(at, occurrence=1)}]
         r["core"].update(ok=False, errors=2)
-    snap5, receipt5, cas5 = fixture()
+    snap5, receipt5, cas5 = fixture(misfiled_as="b" * 64)
     _two_occurrences(receipt5)
     res5, f5 = project(snap5, receipt5, cas5)
     sm.check_true("two same-code issues at distinct occurrences both survive",
@@ -519,8 +543,7 @@ def run_vectors():
                   and any(x["code"] == "RUNTIME_NOT_DECLARED" for x in f7))
 
     # re-gate P1-2: emitted evidence must detach from its input
-    snap8, receipt8, cas8 = fixture()
-    _negative(receipt8)
+    snap8, receipt8, cas8 = fixture(misfiled_as="b" * 64)
     res8, _f8 = project(snap8, receipt8, cas8)
     before = json.dumps(res8["view_manifest"], sort_keys=True)
     receipt8["core"]["sources"][1]["issues"][0]["code"] = "MUTATED_AFTER_EMISSION"
@@ -542,6 +565,54 @@ def run_vectors():
     sm.check_true("record relabelled 'other' -> refusal, no generic entity",
                   lambda: res9 is None
                   and any(x["code"] == "SOURCE_KIND_MISMATCH" for x in f9))
+
+    # re-gate P1-1: stale computed_wid over an edited body
+    reason_obj = {"kind": "check", "runtime": "ski@v1", "check": "a" * 64,
+                  "verdict": "pass", "transcript": "b" * 64}
+    body_v2 = {"warrant": "0.2", "decision": "accept", "subject": {},
+               "under": [], "because": [reason_obj], "evidence": [],
+               "actor": {"id": "x"}, "prior": [], "ts": 2}   # ts 1 -> 2
+    rec_v2 = {"body": body_v2,
+              "sigs": [{"actor": "x", "key": "c" * 64, "sig": "d" * 128}]}
+    snapA, receiptA, casA = fixture()
+    old_src = receiptA["core"]["sources"][1]
+    old_path, old_wid = old_src["path"], old_src["computed_wid"]
+    filesA = {old_path: sm.jcs(rec_v2), ".warrants/blobs/p": b"policy"}
+    casA = {sm.sha256_hex(v): v for v in filesA.values()}
+    uniA = sm.seal_universe(filesA)
+    dA = sm.subroot_descriptor("warrant",
+                               {"name": "warrant", "version": "0.4",
+                                "spec_digest": sm.sha256_hex(b"spec")},
+                               ".warrants/", uniA)
+    snapA = sm.snapshot_object([dA], [])
+    by_pathA = {e["path"]: e["sha256"] for e in uniA}
+    for s in receiptA["core"]["sources"]:
+        s["entry_digest"] = by_pathA[s["path"]]        # snapshot rebuilt...
+    receiptA["core"]["subroot_descriptor_digest"] = sm.subroot_descriptor_digest(dA)
+    # ...but the receipt still reports the OLD WarrantID for the new body
+    sm.check_equal("fixture keeps the stale WID", old_src["computed_wid"], old_wid)
+    resA, fA = project(snapA, receiptA, casA)
+    sm.check_true("stale computed_wid over an edited body -> refusal",
+                  lambda: resA is None
+                  and any(x["code"] == "COMPUTED_WID_MISMATCH" for x in fA))
+
+    # re-gate P1-2: two paths, identical bytes -> two source occurrences
+    snapB, receiptB, casB = fixture(
+        extra_files={".warrants/genesis.json": b"policy"})   # same bytes as blobs/p
+    resB, fB = project(snapB, receiptB, casB)
+    sm.check_equal("identical-byte sources both validate", fB, [])
+    lines = resB["nquads"].decode().splitlines()
+    src_nodes = {ln.split(" ")[0] for ln in lines if "sev#Source" in ln}
+    kinds = {ln.split(" ")[0]: ln for ln in lines if "sev#sourceKind" in ln}
+    sm.check_true("two distinct source-occurrence nodes for identical bytes",
+                  lambda: len(src_nodes) == 3 and len(kinds) == 3)
+    sm.check_true("each occurrence carries exactly one kind and its own path",
+                  lambda: sum(1 for ln in lines if "sev#sourceKind" in ln) == 3
+                  and sum(1 for ln in lines if "sev#path" in ln) == 3)
+    sm.check_true("both occurrences specialize the one content entity",
+                  lambda: sum(1 for ln in lines
+                              if "specializationOf" in ln
+                              and sm.sha256_hex(b"policy") in ln) == 2)
 
     # re-gate P2-1: the empty-corpus guard needs its own negative control
     code_guard = (

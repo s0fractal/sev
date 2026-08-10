@@ -204,6 +204,13 @@ JCS-canonical I-JSON per warrant SPEC §4; closed schemas; one type tag.
 - ▲ **`global_issues[]`** carries store- and settlement-level problems that
   belong to no single source file (invalid threshold policy, unverified
   genesis, missing jurisdiction root).
+- ▲ **Both WID halves are derived, not reported (rev 6).** `claimed_wid`
+  comes from the filename under the store layout, and `computed_wid` MUST be
+  re-derived by the consumer as `sha256(JCS(body))` from the committed bytes
+  — internal equality of the two fields only proves the receipt agrees with
+  itself, and a stale `computed_wid` over an edited body kept a graph
+  asserting an identity the bytes no longer had. Findings:
+  `COMPUTED_WID_MISMATCH`, `CLAIMED_WID_NOT_PATH`.
 - ▲ **`claimed_wid` / `computed_wid`, both nullable.** For
   `records/<claimed>.json` whose body canonicalizes to a different WarrantID,
   rev 2's single `wid` was ambiguous (filename claim? recomputation?

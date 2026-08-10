@@ -641,6 +641,25 @@ def validate_receipt_core(core, descriptor=None, cas=None) -> list:
         if src["id_sound"] is False and not err_here:
             _f(f, "ID_UNSOUND_WITHOUT_ERR", at)
 
+        # Resolve the record ONCE per source and re-derive the WarrantID from
+        # the committed body. Internal equality of claimed/computed only
+        # proves the receipt agrees with itself: a stale `computed_wid` over
+        # an edited body kept the graph asserting an identity the bytes no
+        # longer have (re-gate P1-1).
+        parsed = None
+        if cas is not None:
+            parsed = _resolve_record(f, cas, src, at)
+            if parsed is not None and w is not None:
+                body = parsed.get("body")
+                try:
+                    actual = sha256_hex(jcs(body)) if isinstance(body, dict) else None
+                except ValueError:
+                    actual = None
+                if actual is None:
+                    _f(f, "RECORD_BODY_UNREADABLE", at)
+                elif actual != w:
+                    _f(f, "COMPUTED_WID_MISMATCH", at)
+
         settlement = src["settlement"] if isinstance(src["settlement"], list) else []
         if not isinstance(src["settlement"], list):
             _f(f, "SETTLEMENT_NOT_LIST", at + "/settlement")
@@ -767,7 +786,7 @@ def validate_receipt_core(core, descriptor=None, cas=None) -> list:
             else:
                 _f(f, "BAD_RE_EXECUTION", rat)
             if cas is not None:
-                _resolve_reason(f, cas, src, reason, rat)
+                _resolve_reason(f, parsed, reason, rat)
         _ordered(f, good_reasons, lambda r: r["ptr"], "REASONS_NOT_SORTED",
                  at + "/reasons")
 
@@ -785,16 +804,26 @@ def validate_receipt_core(core, descriptor=None, cas=None) -> list:
     return f
 
 
-def _resolve_reason(f, cas, src, reason, rat):
-    """ptr must resolve inside the committed record bytes and hash to
-    reason_digest — the byte-level half of the reason contract."""
+def _resolve_record(f, cas, src, at):
+    """Resolve and parse a record's committed bytes ONCE per source.
+    Returns the parsed envelope or None (with a finding)."""
     try:
         raw = cas_resolve(cas, src["entry_digest"])
     except (KeyError, SealViolation):
-        _f(f, "REASON_PTR_UNRESOLVABLE", rat)
-        return
-    obj, pf = parse_strict(raw)
+        _f(f, "RECORD_UNRESOLVABLE", at)
+        return None
+    obj, _pf = parse_strict(raw)
     if obj is None or not isinstance(obj, dict):
+        _f(f, "RECORD_UNREADABLE", at)
+        return None
+    return obj
+
+
+def _resolve_reason(f, obj, reason, rat):
+    """ptr must resolve inside the committed record bytes and hash to
+    reason_digest — the byte-level half of the reason contract. `obj` is the
+    envelope already parsed by _resolve_record (one CAS read per source)."""
+    if not isinstance(obj, dict):
         _f(f, "REASON_PTR_UNRESOLVABLE", rat)
         return
     body = obj.get("body")

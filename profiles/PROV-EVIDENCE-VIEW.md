@@ -415,6 +415,13 @@ reproduced countervector:
   `sev:sourceKind` and `sev:entryDigest`. Counting a member as projected
   while emitting nothing for it is the same silent-truncation class on the
   other branch of the union.
+- **Occurrence identity is distinct from content identity.** A source node
+  is `urn:sev:source:<sha256(path ‖ 0x00 ‖ entry_digest)>` carrying
+  `sev:path`, `sev:sourceKind` and `sev:entryDigest`, and it
+  `prov:specializationOf` the content entity (`urn:wrt:blob:<digest>`, or
+  `urn:wrt:record:<wid>` for records). Keying source nodes on the digest
+  alone merged two paths holding identical bytes into one node with two
+  kinds — the graph silently losing a multiplicity the receipt records.
 - **A source's role is derived, never reported.** `kind` and a record's
   `claimed_wid` follow from the store layout under the descriptor prefix
   (`records/<hex64>.json`, `blobs/*`, `genesis.json`, else `other`); a
