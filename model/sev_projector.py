@@ -21,6 +21,7 @@ Stdlib only. Run:  python3 sev_projector.py   (self-vectors; exit = verdict)
 
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -1722,48 +1723,91 @@ def run_vectors():
     # independent entailment guard: PROV predicates whose domain is an
     # Activity may only have CheckRun subjects — checked by parsing the
     # output back, not by trusting the emitter
-    # Bidirectional and predicate-specific: PROV constrains both ends, and a
-    # domain-only guard passed a graph that entailed the Warrant record was
-    # an Activity (via prov:wasInformedBy, whose range is Activity too).
-    ACTIVITY_TYPES = ("sigma#CheckRun", "wrt#Filing")
-    #        predicate            subject     object
-    PROV_SIGNATURES = {
-        "prov#used":              ("activity", "entity"),
-        "prov#wasInformedBy":     ("activity", "activity"),
-        "prov#generated":         ("activity", "entity"),
-        "prov#wasGeneratedBy":    ("entity",   "activity"),
-        "prov#wasAssociatedWith": ("activity", "agent"),
-        "prov#specializationOf":  ("entity",   "entity"),
+    # Bidirectional, predicate-specific and TOTAL over the profile's own type
+    # registry. Recognising only CheckRun and Filing as activities meant an
+    # explicit `prov:Activity` — or the profile's own VerificationActivity —
+    # could stand in an Entity position although PROV makes those classes
+    # disjoint; and the Agent branch and literal objects were never checked
+    # at all (re-gate P1).
+    PROV_NS = "http://www.w3.org/ns/prov#"
+    RDF_TYPE_IRI = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
+    TYPE_REGISTRY = {
+        PROV_NS + "Activity": "activity",
+        "https://s0fractal.dev/ns/sigma#CheckRun": "activity",
+        "https://s0fractal.dev/ns/wrt#Filing": "activity",
+        "https://s0fractal.dev/ns/sev#VerificationActivity": "activity",
+        PROV_NS + "Entity": "entity",
+        PROV_NS + "Bundle": "entity",
+        PROV_NS + "Plan": "entity",
+        "https://s0fractal.dev/ns/wrt#Warrant": "entity",
+        "https://s0fractal.dev/ns/wrt#Reason": "entity",
+        "https://s0fractal.dev/ns/wrt#Signature": "entity",
+        "https://s0fractal.dev/ns/sev#Source": "entity",
+        "https://s0fractal.dev/ns/sev#ExecutionAssessment": "entity",
+        "https://s0fractal.dev/ns/sev#VerificationReceipt": "entity",
+        PROV_NS + "Agent": "agent",
+        PROV_NS + "Person": "agent",
+        PROV_NS + "SoftwareAgent": "agent",
+        PROV_NS + "Organization": "agent",
     }
+    PROV_SIGNATURES = {
+        PROV_NS + "used":              ("activity", "entity"),
+        PROV_NS + "wasInformedBy":     ("activity", "activity"),
+        PROV_NS + "generated":         ("activity", "entity"),
+        PROV_NS + "wasGeneratedBy":    ("entity",   "activity"),
+        PROV_NS + "wasAssociatedWith": ("activity", "agent"),
+        PROV_NS + "wasAttributedTo":   ("entity",   "agent"),
+        PROV_NS + "specializationOf":  ("entity",   "entity"),
+    }
+    _TERM = re.compile(r'<([^>]*)>|"((?:[^"\\]|\\.)*)"(?:\^\^<[^>]*>)?')
+
+    def _parse_nquads(nquads):
+        """Structural: a term is an IRI or a literal, never a space-split
+        token.
+
+        Unisolatable by a behavioural vector today, and labelled rather than
+        counted: N-Quads always has an IRI subject and predicate, so a naive
+        space split misreads only the *content* of a spaced literal, never
+        its IRI-vs-literal classification — the verdicts coincide on every
+        shape this profile emits. It is kept because that coincidence is a
+        property of the current signature set, not of the format.
+        """
+        out = []
+        for line in nquads.decode().splitlines():
+            terms = [(m.group(1), True) if m.group(1) is not None
+                     else (m.group(2), False)
+                     for m in _TERM.finditer(line)]
+            if len(terms) >= 3:
+                out.append(terms[:4])
+        return out
 
     def _prov_violations(nquads):
-        lines = nquads.decode().splitlines()
-        activities = set()
-        for line in lines:
-            parts = line.split(" ")
-            if len(parts) >= 3 and "22-rdf-syntax-ns#type" in parts[1] \
-                    and any(a in parts[2] for a in ACTIVITY_TYPES):
-                activities.add(parts[0])
+        quads = _parse_nquads(nquads)
+        kinds = {}
+        for terms in quads:
+            (subj, s_iri), (pred, _p), (obj, o_iri) = terms[0], terms[1], terms[2]
+            if s_iri and pred == RDF_TYPE_IRI and o_iri and obj in TYPE_REGISTRY:
+                kinds.setdefault(subj, set()).add(TYPE_REGISTRY[obj])
+
+        def _bad(node, is_iri, want):
+            if not is_iri:
+                return True                    # a literal is never a PROV node
+            have = kinds.get(node, set())
+            if not have:
+                return want != "entity"        # untyped nodes are Entities
+            return want not in have            # disjoint classes: no overlap
+
         bad = set()
-        for line in lines:
-            parts = line.split(" ")
-            if len(parts) < 3:
+        for terms in quads:
+            (subj, s_iri), (pred, _p), (obj, o_iri) = terms[0], terms[1], terms[2]
+            sig = PROV_SIGNATURES.get(pred)
+            if not sig:
                 continue
-            subj, pred, obj = parts[0], parts[1], parts[2]
-            for name, (want_s, want_o) in PROV_SIGNATURES.items():
-                if name not in pred:
-                    continue
-                # an Activity position REQUIRES an Activity type; an Entity
-                # position forbids one (untyped nodes are Entities)
-                if want_s == "activity" and subj not in activities:
-                    bad.add(("subject", name, subj))
-                if want_s == "entity" and subj in activities:
-                    bad.add(("subject", name, subj))
-                if obj.startswith("<"):
-                    if want_o == "activity" and obj not in activities:
-                        bad.add(("object", name, obj))
-                    if want_o == "entity" and obj in activities:
-                        bad.add(("object", name, obj))
+            want_s, want_o = sig
+            if _bad(subj, s_iri, want_s):
+                bad.add(("subject", pred.rsplit("#", 1)[-1], subj))
+            if _bad(obj, o_iri, want_o):
+                bad.add(("object", pred.rsplit("#", 1)[-1], obj))
         return bad
 
     # the guard itself is unit-tested: on a healthy graph the range clause
@@ -1776,7 +1820,7 @@ def run_vectors():
         b'<urn:sigma:run:a> <http://www.w3.org/ns/prov#wasInformedBy> '
         b'<urn:wrt:record:b> .\n')
     sm.check_true("guard catches an Activity-range violation",
-                  lambda: ("object", "prov#wasInformedBy", "<urn:wrt:record:b>")
+                  lambda: ("object", "wasInformedBy", "urn:wrt:record:b")
                   in _prov_violations(_bad_range))
     _bad_domain = (
         b'<urn:wrt:record:b> <http://www.w3.org/ns/prov#used> '
@@ -1792,6 +1836,58 @@ def run_vectors():
     sm.check_true("guard catches an Activity standing in an Entity position",
                   lambda: any(v[0] == "object" for v in
                               _prov_violations(_entity_position)))
+
+    # the re-gate's own countervectors, kept permanently
+    def _nq(*lines):
+        return ("\n".join(lines) + "\n").encode()
+
+    T = "<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>"
+    _explicit_activity = _nq(
+        "<urn:x> %s <http://www.w3.org/ns/prov#Activity> ." % T,
+        "<urn:sigma:run:a> %s <https://s0fractal.dev/ns/sigma#CheckRun> ." % T,
+        "<urn:sigma:run:a> <http://www.w3.org/ns/prov#used> <urn:x> .")
+    sm.check_true("an explicit prov:Activity cannot sit in an Entity position",
+                  lambda: any(v[0] == "object"
+                              for v in _prov_violations(_explicit_activity)))
+
+    _profile_activity = _nq(
+        "<urn:v> %s <https://s0fractal.dev/ns/sev#VerificationActivity> ." % T,
+        "<urn:sigma:run:a> %s <https://s0fractal.dev/ns/sigma#CheckRun> ." % T,
+        "<urn:sigma:run:a> <http://www.w3.org/ns/prov#used> <urn:v> .")
+    sm.check_true("...and neither can the profile's own VerificationActivity",
+                  lambda: any(v[0] == "object"
+                              for v in _prov_violations(_profile_activity)))
+
+    _record_as_agent = _nq(
+        "<urn:wrt:record:b> %s <https://s0fractal.dev/ns/wrt#Warrant> ." % T,
+        "<urn:sigma:run:a> %s <https://s0fractal.dev/ns/sigma#CheckRun> ." % T,
+        "<urn:sigma:run:a> <http://www.w3.org/ns/prov#wasAssociatedWith> "
+        "<urn:wrt:record:b> .")
+    sm.check_true("an Entity cannot stand in an Agent position",
+                  lambda: any(v[0] == "object"
+                              for v in _prov_violations(_record_as_agent)))
+
+    _literal_agent = _nq(
+        "<urn:sigma:run:a> %s <https://s0fractal.dev/ns/sigma#CheckRun> ." % T,
+        '<urn:sigma:run:a> <http://www.w3.org/ns/prov#wasAssociatedWith> '
+        '"alice" .')
+    sm.check_true("a literal is never a PROV node (Agent position)",
+                  lambda: any(v[0] == "object"
+                              for v in _prov_violations(_literal_agent)))
+
+    _literal_entity = _nq(
+        "<urn:sigma:run:a> %s <https://s0fractal.dev/ns/sigma#CheckRun> ." % T,
+        '<urn:sigma:run:a> <http://www.w3.org/ns/prov#used> "just text" .')
+    sm.check_true("...nor in an Entity position",
+                  lambda: any(v[0] == "object"
+                              for v in _prov_violations(_literal_entity)))
+
+    _spaced_literal = _nq(
+        "<urn:sigma:run:a> %s <https://s0fractal.dev/ns/sigma#CheckRun> ." % T,
+        '<urn:sigma:run:a> <https://s0fractal.dev/ns/sigma#runtime> '
+        '"a b c" .')
+    sm.check_equal("a literal containing spaces parses as one term",
+                   _prov_violations(_spaced_literal), set())
 
     for label, res_ in [("upstream not-applicable", resUP),
                         ("ski matched", result),

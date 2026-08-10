@@ -528,6 +528,15 @@ reproduced countervector:
   `sev:sourceKind` and `sev:entryDigest`. Counting a member as projected
   while emitting nothing for it is the same silent-truncation class on the
   other branch of the union.
+- **The conformance guard must be total over its own type registry.** It
+  classifies nodes through a closed registry that includes the PROV **base**
+  classes (`prov:Activity`, `prov:Entity`, `prov:Agent`) alongside every
+  subclass this profile declares — recognising only `sigma:CheckRun` and
+  `wrt:Filing` as activities let an explicit `prov:Activity`, or the
+  profile's own `sev:VerificationActivity`, stand in an Entity position
+  although those classes are disjoint. Agent positions are enforced, and a
+  **literal is never a PROV node** in any object-property position. The
+  guard parses N-Quads structurally rather than splitting on spaces.
 - **PROV constrains both ends of a relation.** `prov:wasInformedBy` has an
   Activity **range** as well as domain, so pointing it at a Warrant record
   entailed that the record was an Activity. A run that consumed the record's
