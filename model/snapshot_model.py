@@ -925,12 +925,33 @@ def available_blob_digests(core) -> set:
     return out
 
 
+class _NotFreezable(Exception):
+    """Raised instead of silently sharing an object with the caller."""
+
+
 def _freeze(value):
-    """A private detached copy; hostile shapes fall back to the original."""
-    try:
-        return copy.deepcopy(value)
-    except Exception:  # noqa: BLE001
+    """A private detached copy, built from exact JSON built-ins only.
+
+    Never returns the original. The previous version fell back to the input
+    on a deepcopy failure, which meant the isolation opened up for exactly
+    the inputs that need it most: an uncopyable mapping stayed shared with
+    the caller and could be mutated between verdict and projection. Exact
+    `type(x) is …` checks (not isinstance) also reject subclasses, which are
+    the usual carrier for read-dependent behaviour.
+    """
+    t = type(value)
+    if value is None or t is bool or t is int or t is str:
         return value
+    if t is list:
+        return [_freeze(v) for v in value]
+    if t is dict:
+        out = {}
+        for k, v in value.items():
+            if type(k) is not str:
+                raise _NotFreezable("non-string key")
+            out[k] = _freeze(v)
+        return out
+    raise _NotFreezable(repr(t))
 
 
 def validate_warrant_receipt(snapshot, receipt, cas=None, expected_version="0.4",
@@ -943,8 +964,15 @@ def validate_warrant_receipt(snapshot, receipt, cas=None, expected_version="0.4"
     # projector another one — the CAS TOCTOU was closed one round earlier,
     # this is the same seam on receipt and snapshot (re-gate P1-1).
     if view is not None:
-        snapshot = _freeze(snapshot)
-        receipt = _freeze(receipt)
+        try:
+            frozen_snapshot = _freeze(snapshot)
+            frozen_receipt = _freeze(receipt)
+        except _NotFreezable:
+            # Fail closed: an input that cannot be detached is refused, never
+            # judged-then-shared. The view stays empty, so no consumer can
+            # mistake a partial freeze for a validated one.
+            return [{"code": "INPUT_NOT_FREEZABLE", "severity": "ERR", "at": "/"}]
+        snapshot, receipt = frozen_snapshot, frozen_receipt
         view["snapshot"] = snapshot
         view["receipt"] = receipt
 

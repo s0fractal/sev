@@ -1112,6 +1112,46 @@ def run_vectors():
                                   srcM["computed_wid"], "/because/0",
                                   srcM["reasons"][0]["reason_digest"], None) + ">"})
 
+    # re-gate: an input that cannot be detached must be REFUSED, not shared.
+    # The old freeze fell back to the caller's object on a copy failure, so
+    # isolation opened exactly for the inputs that need it most.
+    class Uncopyable(dict):
+        def __deepcopy__(self, memo):
+            raise RuntimeError("refuses to be copied")
+
+    snapN, receiptN, casN = fixture()
+    hostile = Uncopyable(receiptN)
+    real_validate3 = sm.validate_warrant_receipt
+
+    def _mutate_after(*a, **kw):
+        out = real_validate3(*a, **kw)
+        hostile["core"]["execution_policy"]["runtimes"][0][
+            "semantics_digest"] = "f" * 64
+        hostile["core"]["sources"][1]["reasons"][0]["outcome"][
+            "observed_result"] = "not-a-nodehash"
+        return out
+    sm.validate_warrant_receipt = _mutate_after
+    try:
+        resN, fN = project(snapN, hostile, casN)
+    finally:
+        sm.validate_warrant_receipt = real_validate3
+    sm.check_true("an uncopyable input is refused, not shared",
+                  lambda: resN is None
+                  and [x["code"] for x in fN] == ["INPUT_NOT_FREEZABLE"])
+    sm.check_true("nothing the validator never judged reached any output",
+                  lambda: resN is None)
+
+    # exact-type freezing: subclasses are the usual carrier of read-dependent
+    # behaviour, so they are refused even when they copy cleanly
+    class PlainSubclass(dict):
+        pass
+    snapO, receiptO, casO = fixture()
+    resO, fO = project(snapO, PlainSubclass(receiptO), casO)
+    sm.check_equal("a dict subclass is refused too",
+                   [x["code"] for x in fO], ["INPUT_NOT_FREEZABLE"])
+    sm.check_true("...and the honest plain-dict path still projects",
+                  lambda: project(snapO, receiptO, casO)[1] == [])
+
     # re-gate P2-1: the empty-corpus guard needs its own negative control
     code_guard = (
         "import json, os, shutil, subprocess, sys, tempfile\n"

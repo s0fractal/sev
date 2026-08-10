@@ -29,3 +29,4 @@ round without a SHA is invalid.
 | 6f | 2026-08-10 | Codex | AMEND | `9f09505` |
 | 6g | 2026-08-10 | Codex | AMEND | `b0a4c4f` |
 | 6h | 2026-08-10 | **Claude (author)** | **self-review — NOT a gate** | `39bda50` |
+| 6i | 2026-08-10 | Codex | AMEND | `d8f33aa` |

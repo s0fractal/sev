@@ -341,6 +341,16 @@ semantica's "single shared intelligence layer").
 
 ## 6. What travels, what doesn't
 
+> **Target profile vs current MVP coverage.** Everything in this section
+> describes the *target* `sev@v0` mapping. The reference projector
+> (`model/sev_projector.py`) implements a deliberately narrow subset and
+> declares the gap machine-readably — see the coverage block in §9 and the
+> `L-NO*` codes in §8. Where this section says a class of evidence is
+> "carried" and the MVP does not emit it, the MVP is not in violation: it is
+> required to say so, and it does. A reader MUST take the emitted
+> `coverage` block, not this prose, as the statement of what a given
+> dataset contains.
+
 Carried as data: `term_hash`/`result_hash`/`atp`, grade, per-signature
 validity+binding, re-execution status, threshold flags, confidence_ppm,
 source_fidelity, verification_class, context-cut commits, content hashes for
@@ -400,6 +410,22 @@ Emitted alongside the graph as JCS-canonical JSON. Codes:
 | L-COMPLETE | Completeness is relative to the sealed snapshot's universe, never global (an `expected.closed` snapshot commitment upgrades omission to a detectable event — see `ECOSYSTEM-SNAPSHOT.md`) |
 | L-UNJUDGED | A subroot present in the bundle carries no validation receipt from its own protocol; its bytes are pinned but unadjudicated |
 
+**Absence codes (`L-NO*`) — what the projection does not emit at all.** The
+codes above qualify facts that ARE in the graph; these declare facts that
+are NOT. Emitted only when the corresponding data actually exists in the
+receipt or snapshot, so a manifest never claims a loss it does not have:
+
+| Code | Declares |
+|---|---|
+| L-NOSIG | The receipt carries signature results (validity/binding) and the projection emits no signature nodes at all |
+| L-NOSETTLE | The receipt carries jurisdiction-scoped settlement and the projection emits no settlement nodes at all |
+| L-NOUNCLAIMED | The snapshot pins `unclaimed` members that are not projected |
+| L-NOMAP | The §4.1 record-body mapping (actor, `under`/Plan, subject, evidence, `prior`) is not implemented by this projector |
+
+A caveat on an absent fact is worse than silence: it reads as
+"present, with reservations". Hence the split — qualify what is there,
+declare what is not.
+
 Each entry carries `code`, `affects` (IRIs or `"*"`), and `recheck` — an
 **argv array** plus the digest of the tool/profile that interprets it
 (`{"argv": ["warrant", "--store", "…", "verify"], "tool_digest": "<hex64>"}`),
@@ -426,6 +452,13 @@ the hash, not the host — and not this graph either."
   "exclusions": [ { "path": "…", "entry_digest": "<hex64>",
                     "projection_reason": "ERR_ISSUES | NOT_LOADED | ID_UNSOUND",
                     "issues": [ {"code": "…", "severity": "ERR", "at": {"…"}} ] } ],
+  "coverage": {
+    "emitted": ["source", "record", "filing", "reason", "check-run",
+                "verification-receipt"],
+    "not_emitted": ["signature", "settlement", "actor", "policy-plan",
+                    "subject", "evidence", "prior", "unclaimed"],
+    "note": "sources_projected counts sources admitted to the graph, NOT completeness of the profile mapping over them"
+  },
   "unverified_reasons": 0,
   "graph_digest": "<hex64>",
   "loss_manifest_digest": "<hex64>",
