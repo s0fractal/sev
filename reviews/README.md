@@ -54,3 +54,4 @@ round without a SHA is invalid.
 | 10 | 2026-08-10 | Codex | AMEND — 1 P1 (envelope schema); round-9 disagreement **resolved in the repo's favour** — reviewer withdrew the canonical-envelope demand | `598b60d` |
 | 11 | 2026-08-10 | Codex | AMEND — 1 P1: acknowledgements joined without their locator | `7b8d86c` |
 | 12 | 2026-08-10 | Codex | AMEND — 1 P1: exclusion bypassed the fixed join; source issues now scope-checked | `b21c3c3` |
+| 13 | 2026-08-10 | Codex | **APPROVE — receipt core only, eligible for freeze**; no P1 | `4e09d7d` (merged unchanged as `1fb82d6`) |

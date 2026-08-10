@@ -465,16 +465,20 @@ field on a blob source ⇒ schema-invalid; `observed_result` present with
 `re_execution:"unverified"` ⇒ schema-invalid; receipt bound to a bare
 file-tree hash ⇒ not this contract.
 
-## v0 freeze candidate (round-6 R6)
+## v0 FROZEN core (2026-08-10 at `1fb82d6`)
 
-Candidate frozen surface: `core`/`producer` split with
+Frozen surface: `core`/`producer` split with
 `receipt_core_digest`; the counts invariants (`errors`/`warnings`/`ok` bound
 to the issue multiset); the universe↔sources bijection; source identity
 `(path, entry_digest)` with `claimed_wid`/`computed_wid`; the reason-outcome
 sum type. Extension points until separately frozen: the issue-code registry,
 locator grammar details, `execution_policy` runtime entries beyond `ski@v1`,
-settlement entry internals. Freeze happens on the first review round with
-zero P1 findings — a maintainer act, not this document's.
+settlement entry internals. The exact-SHA review of `4e09d7d` found zero P1;
+the reviewed tree was merged unchanged through PR #2 as `1fb82d6`.
+
+This freeze covers the receipt core only. It does not freeze the MVP
+projector, the full `sev@v0` target profile, an adapter to live Warrant
+verifier output, or adoption of this upstream proposal by Warrant.
 
 ## Open questions
 
