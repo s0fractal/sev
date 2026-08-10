@@ -33,6 +33,7 @@ Sealed Ecosystem Bundle  (ecosystem.snapshot@v0)
 | [`proposals/WARRANT-VERIFICATION-RECEIPT.md`](proposals/WARRANT-VERIFICATION-RECEIPT.md) | `warrant.verification-receipt@v0` — **SEV-originated design candidate for Warrant; not a Warrant contract** (see Ownership below) |
 | [`model/snapshot_model.py`](model/snapshot_model.py) | Executable reference model: raw-byte strict parsers, total validators, composed receipt verdict, self-vectors |
 | [`model/sev_projector.py`](model/sev_projector.py) | Projector MVP (round-6 R4): verified (snapshot, receipt) → canonical N-Quads + view-manifest + loss_manifest; Warrant quadrant only; refuses on any verdict finding |
+| [`model/warrant_adapter.py`](model/warrant_adapter.py) | Live adapter: seals a **real** `.warrants/` store and projects it. The only component that meets evidence this repository did not author; performs no cryptography, and asks Warrant's own implementation about Warrant's own bytes |
 | [`conformance/`](conformance/) | Language-neutral fixtures (base64 bytes + expected codes) + replay harness — a second implementation consumes the JSON, not the Python |
 | [`reviews/`](reviews/) | Adversarial review rounds 1–6 with dispositions; rounds 1–5 predate the repo and are marked as reconstructed (see `reviews/README.md`); from round 6, a review without an exact SHA is invalid |
 
@@ -42,10 +43,14 @@ Sealed Ecosystem Bundle  (ecosystem.snapshot@v0)
 python3 model/snapshot_model.py   # exit status is the verdict
 python3 model/sev_projector.py    # end-to-end projection, cross-process determinism
 python3 conformance/replay.py     # language-neutral fixture replay
+python3 model/warrant_adapter.py --selftest        # adapter vectors
+python3 model/warrant_adapter.py ~/path/.warrants  # project a real store
 ```
 
-CI (`.github/workflows/model.yml`) runs all three on every push and PR —
-exit-status honesty is a gate, not a habit.
+CI (`.github/workflows/model.yml`) runs all four on every push and PR —
+exit-status honesty is a gate, not a habit. The adapter's live half needs a
+Warrant store, which a runner does not have, so it prints `SKIP` there and
+says so; its fixture half still gates.
 
 The suites pass every vector they carry, and each prints its own count when
 run — deliberately not repeated here, because a number in prose rots while
