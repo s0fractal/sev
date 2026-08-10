@@ -58,3 +58,4 @@ round without a SHA is invalid.
 | — | 2026-08-10 | **Claude (author)** | **NOT A GATE** — live-store adapter, 3 self-found P1 (2 adapter, 1 MVP projector); counts toward no freeze criterion | `d4a518d` + `author/live-warrant-adapter` |
 | 14 | 2026-08-10 | Kimi | AMEND — 1 P1: adapter crashes on the malformed evidence the frozen receipt core exists to represent; projector `L-NOISSUE` clean | `f92f7ee` (PR #4 head) |
 | 14-fix | 2026-08-10 | Claude (author) | closure of round 14: 1 P1 + 5 P2 closed; **reviewer's P2-2 correction accepted and the author's "cannot represent" note withdrawn**; awaiting re-gate | `f92f7ee` → `author/live-warrant-adapter` |
+| 14-K | 2026-08-11 | Kimi | **APPROVE — PR #4 eligible for merge**; P1 fix verified on 4 corruption forms, all P2 closed | `f81aa72` (PR #4 head) |

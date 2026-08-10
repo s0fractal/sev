@@ -89,3 +89,26 @@ exit status honest. Live store still seals and projects (81 sources, 811
 quads, 0 errors / 16 warnings — matching Warrant's own report exactly).
 
 **Not done, deliberately:** no merge, no freeze, no WRT-003.
+
+## Addendum after re-gate 14-K — why non-canonical bytes are tolerated
+
+The re-gate closes with a design note: a non-canonical-but-parseable record
+passes without the receipt mentioning its non-canonicality. Verified
+independently — a record re-serialized with `indent=7` and unsorted keys
+seals, projects, and reports `id_sound: true` with a clean verdict.
+
+Recording *why*, because a future reviewer could otherwise read this as an
+oversight and reopen a settled question: **envelope canonicality is not a
+Warrant requirement.** That was the round-9/10 disagreement, filed with SPEC
+§4/§5.1 citations and `impl/warrant.py:660`, and resolved in the repository's
+favour — the reviewer withdrew the demand after the evidence showed 16/16
+record files in the live store are non-canonical and that the prescribed rule
+would kill the vendored upstream fixture. The WarrantID is over the *body*;
+the store writer itself emits `indent=2`. So tolerating it is not laxity, it
+is agreement with the owning protocol.
+
+The conditional in the note is the right one and is adopted as written: **if
+Warrant ever makes canonical storage normative, this adapter must surface it
+as an issue.** Until then, reporting it would make SEV stricter than the
+protocol it reports on — the mirror image of the round-14 defect where it was
+quieter.
