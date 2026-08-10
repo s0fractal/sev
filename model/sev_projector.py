@@ -143,30 +143,6 @@ def iri_receipt(core_digest):
     return "urn:sev:receipt:" + core_digest
 
 
-def _committed_reasons(cas, src):
-    """{ptr: committed reason object} from the record's committed bytes.
-
-    The receipt names the reason by digest; the check blob it used lives only
-    in those bytes, so `prov:used` and the pointer link can be emitted
-    faithfully instead of being dropped (re-gate P1-2)."""
-    out = {}
-    if cas is None:
-        return out
-    try:
-        raw = sm.cas_resolve(cas, src["entry_digest"])
-    except (KeyError, sm.SealViolation):
-        return out
-    obj, _f = sm.parse_strict(raw)
-    body = obj.get("body") if isinstance(obj, dict) else None
-    because = body.get("because") if isinstance(body, dict) else None
-    if not isinstance(because, list):
-        return out
-    for i, item in enumerate(because):
-        if isinstance(item, dict):
-            out["/because/%d" % i] = item
-    return out
-
-
 # ---------------------------------------------------------------- projection
 
 def _file_digest(*relpath):
@@ -182,9 +158,15 @@ def _tool_digest():
 def project(snapshot, receipt, cas) -> tuple:
     """(result dict | None, findings). Pure function of its inputs: no
     clocks, no randomness, no filesystem reads beyond the tool digest."""
-    findings = sm.validate_warrant_receipt(snapshot, receipt, cas)
+    # ONE validation pass produces both the verdict and the parsed view it
+    # was rendered over. Re-reading the CAS afterwards let a stateful
+    # resolver hand the projector different bytes than the verdict judged
+    # (re-gate P1-4) — the projector now touches no store at all.
+    view = {}
+    findings = sm.validate_warrant_receipt(snapshot, receipt, cas, view=view)
     if findings:
         return None, findings
+    committed_by_path = view.get("committed", {})
 
     core = receipt["core"]
     core_digest = sm.sha256_hex(sm.jcs(core))
@@ -204,6 +186,8 @@ def project(snapshot, receipt, cas) -> tuple:
     subroot_digest = core["subroot_descriptor_digest"]
     runtime_semantics = {r["runtime"]: r["semantics_digest"]
                          for r in core["execution_policy"]["runtimes"]}
+    # what actually exists in this subroot, by content digest
+    source_digests = {s["entry_digest"] for s in core["sources"]}
 
     def _exclude(src, projection_reason):
         """Exclusions carry the receipt's issues VERBATIM — the exact ordered
@@ -262,7 +246,6 @@ def project(snapshot, receipt, cas) -> tuple:
         g.add(occ, SEV + "entryDigest", _lit(src["entry_digest"]))
         g.add(occ, SEV + "inSubroot", _lit(subroot_digest))
         g.add(occ, PROV + "specializationOf", _iri(rec))
-        committed = _committed_reasons(cas, src)
         for reason in src["reasons"]:
             o = reason["outcome"]
             rt = reason["runtime"]
@@ -276,15 +259,25 @@ def project(snapshot, receipt, cas) -> tuple:
             g.add(reason_node, SIGMA + "runtime", _lit(rt))
             g.add(reason_node, SIGMA + "claimedVerdict", _lit(o["claimed_verdict"]))
             g.add(rec, WRT + "hasReason", _iri(reason_node))
-            check_blob = (committed.get(reason["ptr"]) or {}).get("check")
+            idx = int(reason["ptr"].rsplit("/", 1)[1])
+            because = committed_by_path.get(src["path"], [])
+            committed = because[idx] if idx < len(because) else {}
+            check_blob = committed.get("check") if isinstance(committed, dict) else None
+            check_present = check_blob in source_digests
             if check_blob:
-                g.add(reason_node, PROV + "used", _iri(iri_blob(check_blob)))
+                # a weak reference: the reason NAMES a check blob. prov:used
+                # has an Activity domain, and asserting it here would turn the
+                # stable reason fact back into an execution (re-gate P1-3)
+                g.add(reason_node, WRT + "checkRef", _lit(check_blob))
+                if check_present:
+                    g.add(reason_node, WRT + "checkBlob", _iri(iri_blob(check_blob)))
 
             run = iri_run(core_digest, wid, reason["ptr"],
                           reason["reason_digest"], sem)
             g.add(run, RDF_TYPE, _iri(SIGMA + "CheckRun"), vgraph)
             g.add(run, PROV + "used", _iri(reason_node), vgraph)
-            if check_blob:
+            if check_blob and check_present and o["re_execution"] in (
+                    "matched", "mismatched"):
                 g.add(run, PROV + "used", _iri(iri_blob(check_blob)), vgraph)
             if sem:
                 g.add(run, SIGMA + "semanticsDigest", _lit(sem), vgraph)
@@ -359,7 +352,9 @@ def fixture(extra_files=None, misfiled_as=None):
     body canonicalizes to another. This is the ONLY way to model id-unsound
     now that both the filename claim and the body hash are derived.
     """
-    reason_obj = {"kind": "check", "runtime": "ski@v1", "check": "a" * 64,
+    check_bytes = b"policy"           # the blob sealed at .warrants/blobs/p
+    reason_obj = {"kind": "check", "runtime": "ski@v1",
+                  "check": sm.sha256_hex(check_bytes),
                   "verdict": "pass", "transcript": "b" * 64}
     body = {"warrant": "0.2", "decision": "accept", "subject": {},
             "under": [], "because": [reason_obj], "evidence": [],
@@ -789,6 +784,116 @@ def run_vectors():
                   lambda: fD == [] and srcs_a and srcs_d and srcs_a != srcs_d)
     sm.check_true("sources declare their subroot",
                   lambda: b"sev#inSubroot" in resD["nquads"])
+
+    # re-gate P1-1: a forged source sharing a path with the real one
+    snapE, receiptE, casE = fixture()
+    real = receiptE["core"]["sources"][0]
+    forged = dict(real, entry_digest="0" * 64)
+    receiptE["core"]["sources"] = sorted(
+        receiptE["core"]["sources"] + [forged],
+        key=lambda s: (sm.path_sort_key(s["path"]), s["entry_digest"]))
+    resE, fE = project(snapE, receiptE, casE)
+    sm.check_true("forged source sharing a path -> refusal, no forged blob",
+                  lambda: resE is None
+                  and any(x["code"] == "DUPLICATE_SOURCE_PATH" for x in fE)
+                  and any(x["code"] == "SOURCE_DIGEST_MISMATCH" for x in fE))
+
+    # re-gate P1-2: one runtime, two semantics
+    snapF, receiptF, casF = fixture()
+    rts = receiptF["core"]["execution_policy"]["runtimes"]
+    rts.append(dict(rts[0], semantics_digest="f" * 64))
+    resF, fF = project(snapF, receiptF, casF)
+    sm.check_true("duplicate runtime with a second anchor -> refusal",
+                  lambda: resF is None
+                  and any(x["code"] == "DUPLICATE_RUNTIME" for x in fF))
+
+    # re-gate P1-3: matched over a check blob absent from this subroot
+    snapG, receiptG, casG = fixture()
+    # rebuild the record so its committed check names a blob nobody sealed
+    ghost = {"kind": "check", "runtime": "ski@v1", "check": "a" * 64,
+             "verdict": "pass", "transcript": "b" * 64}
+    bodyG = {"warrant": "0.2", "decision": "accept", "subject": {}, "under": [],
+             "because": [ghost], "evidence": [], "actor": {"id": "x"},
+             "prior": [], "ts": 1}
+    recG = {"body": bodyG,
+            "sigs": [{"actor": "x", "key": "c" * 64, "sig": "d" * 128}]}
+    widG = sm.sha256_hex(sm.jcs(bodyG))
+    filesG = {".warrants/records/%s.json" % widG: sm.jcs(recG),
+              ".warrants/blobs/p": b"policy"}
+    casG = {sm.sha256_hex(v): v for v in filesG.values()}
+    uniG = sm.seal_universe(filesG)
+    dG = sm.subroot_descriptor("warrant",
+                               {"name": "warrant", "version": "0.4",
+                                "spec_digest": sm.sha256_hex(b"spec")},
+                               ".warrants/", uniG)
+    snapG = sm.snapshot_object([dG], [])
+    bpG = {e["path"]: e["sha256"] for e in uniG}
+    rpG = ".warrants/records/%s.json" % widG
+    receiptG["core"].update(
+        subroot_descriptor_digest=sm.subroot_descriptor_digest(dG),
+        sources=sorted([
+            {"kind": "blob", "path": ".warrants/blobs/p",
+             "entry_digest": bpG[".warrants/blobs/p"], "loaded": True,
+             "issues": []},
+            {"kind": "record", "path": rpG, "entry_digest": bpG[rpG],
+             "loaded": True, "claimed_wid": widG, "computed_wid": widG,
+             "id_sound": True, "settlement": [], "signatures": [], "issues": [],
+             "reasons": [{"ptr": "/because/0", "kind": "check",
+                          "runtime": "ski@v1",
+                          "reason_digest": sm.sha256_hex(sm.jcs(ghost)),
+                          "outcome": {"re_execution": "matched",
+                                      "claimed_verdict": "pass",
+                                      "observed_verdict": "pass",
+                                      "observed_result": "e" * 64,
+                                      "atp_spent": 7, "failure_code": None}}]},
+        ], key=lambda s: (sm.path_sort_key(s["path"]), s["entry_digest"])))
+    resG, fG = project(snapG, receiptG, casG)
+    sm.check_true("matched over an unsealed check blob -> CHECK_BLOB_ABSENT",
+                  lambda: resG is None
+                  and any(x["code"] == "CHECK_BLOB_ABSENT" for x in fG))
+
+    # ...and an honest unverified/MISSING_BLOB keeps only a weak reference
+    def _missing(r):
+        src = r["core"]["sources"][1]
+        src["reasons"][0]["outcome"].update(
+            re_execution="unverified", observed_verdict=None,
+            observed_result=None, atp_spent=None, failure_code="MISSING_BLOB")
+        src["issues"] = [{"code": "REASON_UNVERIFIED", "severity": "WARN",
+                          "at": {"kind": "json-pointer", "value": "/because/0"}}]
+        r["core"].update(warnings=1)
+    receiptG2 = json.loads(json.dumps(receiptG))
+    _missing(receiptG2)
+    resG2, fG2 = project(snapG, receiptG2, casG)
+    sm.check_true("unverified/MISSING_BLOB projects with a weak ref only",
+                  lambda: fG2 == []
+                  and b"wrt#checkRef" in resG2["nquads"]
+                  and b"prov#used <urn:wrt:blob:" + b"a" * 64 not in resG2["nquads"])
+    sm.check_true("Reason never carries prov:used (its domain is Activity)",
+                  lambda: not any(
+                      ln.startswith("<urn:wrt:reason:") and "prov#used" in ln
+                      for ln in resG2["nquads"].decode().splitlines()))
+
+    # re-gate P1-4: the projector reads no store after the verdict
+    class OnceCAS(dict):
+        """A store that disappears after validation — a projector that
+        re-reads would silently lose edges instead of failing."""
+        def __init__(self, base):
+            super().__init__(base)
+            self.reads = 0
+            self.exhausted = False
+
+        def __getitem__(self, k):
+            if self.exhausted:
+                raise KeyError(k)
+            self.reads += 1
+            return super().__getitem__(k)
+
+    snapH, receiptH, casH = fixture()
+    once = OnceCAS(casH)
+    resH, fH = project(snapH, receiptH, once)
+    baseline, _ = project(snapH, receiptH, casH)
+    sm.check_equal("projection over a one-shot store is byte-identical",
+                   resH["nquads"], baseline["nquads"])
 
     # re-gate P2-1: the empty-corpus guard needs its own negative control
     code_guard = (

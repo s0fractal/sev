@@ -118,7 +118,9 @@ literal prose).
 | Signature | `urn:wrt:sig:<sha256(JCS({actor,key,sig}))>:<multiplicity>` |
 | Actor | `urn:wrt:actor:<pct-encoded actor string>` |
 | Σ-GLYPH node | `urn:sigma:node:<NodeHash>` |
-| Σ-GLYPH reason occurrence | `urn:sigma:run:<sha256(WID ‖ 0x00 ‖ JSON-pointer ‖ 0x00 ‖ reason_digest)>` |
+| Source occurrence | `urn:sev:source:<sha256(subroot_descriptor_digest ‖ 0x00 ‖ path ‖ 0x00 ‖ entry_digest)>` — `sourceKind` is contract-derived, so the occurrence is scoped to the descriptor that derived it |
+| Reason (stable fact of a record) | `urn:wrt:reason:<sha256(WID ‖ 0x00 ‖ JSON-pointer ‖ 0x00 ‖ reason_digest)>` — an Entity. Carries `sev:pointer`, `sigma:runtime`, `sigma:claimedVerdict`, `wrt:checkRef` (literal digest) and, when that blob is sealed in the same subroot, `wrt:checkBlob`. **Never `prov:used`** — that predicate's domain is an Activity |
+| Check run (one execution of a reason) | `urn:sigma:run:<sha256(receipt_core_digest ‖ 0x00 ‖ WID ‖ 0x00 ‖ JSON-pointer ‖ 0x00 ‖ reason_digest ‖ 0x00 ‖ semantics_digest)>` — an Activity. Two verifications of the same reason under different declared semantics are two runs; keying on the reason alone fused them once datasets merged, and a named graph scopes statements without localizing IRIs |
 | OAIP record | `urn:oaip:record:<sha256 of JCS-canonical record bytes>` |
 | OAIP blob/artifact | `urn:oaip:blob:<sha256>` |
 | BOS atom (semantic id) | `urn:bos:atom:<pct-encoded bos id>` |
@@ -231,22 +233,51 @@ noting SHACL checks shape, not truth; truth was checked at R1/R3.
 | `verification_class` | literal; `adjudicated`/`research` also listed under L-VCLASS |
 | governance status | six axis literals; `proposed` MUST NOT render as adopted |
 
-### 4.4 Σ-GLYPH reason occurrence → PROV
+### 4.4 Reason and check run → PROV
+
+**Two objects, never one.** The reason is a fact of the record; the run is
+one verification of it. This section is normative; the change ledger below
+records only how it got here.
 
 ```
-urn:sigma:run:<…>  a sigma:CheckRun ;              # ⊑ prov:Activity
-    prov:used urn:wrt:blob:<check> , urn:sigma:node:<term_hash> ;
-    prov:generated urn:sigma:node:<result_hash> ;
-    sigma:atp "<int>"^^xsd:integer ;
+urn:wrt:reason:<…>  a wrt:Reason ;                 # ⊑ prov:Entity
+    sev:pointer "/because/<i>" ;
+    sigma:reasonDigest "<hex64>" ;
     sigma:runtime "ski@v1" ;
+    sigma:claimedVerdict "pass" | "fail" ;
+    wrt:checkRef "<hex64 of the committed check blob>" ;
+    wrt:checkBlob urn:wrt:blob:<check> .           # ONLY if sealed in this subroot
+
+urn:wrt:record:<WID>  wrt:hasReason  urn:wrt:reason:<…> .
+
+urn:sigma:run:<…>  a sigma:CheckRun ;              # ⊑ prov:Activity
+    prov:used urn:wrt:reason:<…> ;
+    prov:used urn:wrt:blob:<check> ;               # ONLY when it actually ran
+    prov:wasInformedBy urn:wrt:record:<WID> ;
+    sev:receiptCoreDigest "<hex64>" ;
     sigma:semanticsDigest "<hex64 from execution_policy>" ;
-    sigma:claimedVerdict "<from the reason>" ;
     sigma:reExecution "matched" | "mismatched" | "unverified" ;
     sigma:observedVerdict "<from outcome, absent if not run>" ;
-    sigma:observedResult urn:sigma:node:<from outcome, absent if not run> ;
-    sigma:atpSpent "<int from outcome, absent if not run>"^^xsd:integer ;
+    prov:generated urn:sigma:node:<observed_result> ;   # absent if not run
+    sigma:atpSpent "<int, absent if not run>"^^xsd:integer ;
     sigma:failureCode "<closed code, only when unverified>" .
 ```
+
+Rules this shape enforces:
+
+- **A Reason never carries `prov:used`.** Its PROV domain is an Activity;
+  hanging the check edge on the Entity re-fuses the two objects. The Reason
+  *names* its check (`wrt:checkRef`) and, only when that blob is sealed in
+  the same subroot, *points at* it (`wrt:checkBlob`).
+- **`prov:used` on the check blob is emitted only for `matched`/
+  `mismatched`.** An `unverified` run used nothing — asserting otherwise
+  describes an execution that did not happen. `MISSING_BLOB` keeps the weak
+  reference and nothing more.
+- **`matched`/`mismatched` require the check blob to exist in this subroot**
+  (`CHECK_BLOB_ABSENT`): warrant SPEC §6 resolves the check as a blob, and
+  §6(7) keeps "re-ran" and "could not run" observationally distinct, so a
+  re-execution over an unsealed blob is an impossible verdict, not a
+  detail.
 
 Every `sigma:*` value is copied from the receipt's structured
 `reasons[].outcome`, never computed by the projector — rev 2.2 note: this is

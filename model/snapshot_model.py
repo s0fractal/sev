@@ -553,7 +553,7 @@ def _join_issue(issues, code, severity, ptr):
 
 # --------------------------------------------- receipt core (internal layer)
 
-def validate_receipt_core(core, descriptor=None, cas=None) -> list:
+def validate_receipt_core(core, descriptor=None, cas=None, view=None) -> list:
     """Total over any parsed JSON value. Judges internal consistency and,
     when descriptor/cas are supplied by the composed verdict, byte-level
     reason resolution. Public entry is validate_warrant_receipt()."""
@@ -594,7 +594,17 @@ def validate_receipt_core(core, descriptor=None, cas=None) -> list:
                 continue
             good_rt.append(rt)
             runtimes[rt["runtime"]] = rt
-        _ordered(f, good_rt, lambda r: (r["runtime"], r["semantics_digest"]),
+        # Uniqueness is by RUNTIME, not by (runtime, semantics_digest): two
+        # ski@v1 entries with different anchors sorted "correctly" while the
+        # lookup silently kept the last, so the receipt held two answers to
+        # "under which semantics was this executed" (re-gate P1-2).
+        seen_rt = set()
+        for i, rt in enumerate(good_rt):
+            if rt["runtime"] in seen_rt:
+                _f(f, "DUPLICATE_RUNTIME",
+                   "/core/execution_policy/runtimes/%d" % i)
+            seen_rt.add(rt["runtime"])
+        _ordered(f, good_rt, lambda r: r["runtime"],
                  "RUNTIMES_NOT_SORTED", "/core/execution_policy/runtimes")
 
     all_issues = list(_valid_issues(f, core["global_issues"], "/core/global_issues"))
@@ -654,6 +664,14 @@ def validate_receipt_core(core, descriptor=None, cas=None) -> list:
         parsed = None
         if cas is not None:
             parsed = _resolve_record(f, cas, src, at)
+            if parsed is not None and view is not None:
+                # the validated view: what the verdict was actually rendered
+                # over, handed to consumers so nothing re-reads the CAS and
+                # judges one snapshot while asserting over another
+                body_obj = parsed.get("body")
+                because = body_obj.get("because") if isinstance(body_obj, dict) else None
+                view.setdefault("committed", {})[src["path"]] = (
+                    json.loads(json.dumps(because)) if isinstance(because, list) else [])
             if parsed is not None and w is not None:
                 body = parsed.get("body")
                 try:
@@ -876,7 +894,8 @@ def _resolve_reason(f, obj, reason, rat):
 
 # ------------------------------------------------- composed public verdict
 
-def validate_warrant_receipt(snapshot, receipt, cas=None, expected_version="0.4") -> list:
+def validate_warrant_receipt(snapshot, receipt, cas=None, expected_version="0.4",
+                             view=None) -> list:
     """THE public verdict tying receipt to snapshot: descriptor lookup, role
     check, exact universe<->sources bijection, per-source digests, then the
     internal core invariants. Total over any parsed JSON values."""
@@ -891,7 +910,7 @@ def validate_warrant_receipt(snapshot, receipt, cas=None, expected_version="0.4"
         _f(f, "SCHEMA_KEYS", "/receipt")
         return f
     core = receipt["core"]
-    core_f = validate_receipt_core(core, cas=cas)
+    core_f = validate_receipt_core(core, cas=cas, view=view)
     f.extend(core_f)
     if not isinstance(core, dict) or not isinstance(snapshot, dict):
         return f
@@ -910,20 +929,31 @@ def validate_warrant_receipt(snapshot, receipt, cas=None, expected_version="0.4"
     universe = descriptor.get("universe")
     if not isinstance(universe, list):
         return f
-    want = {}
+    # Bijection over PAIRS, not a dict keyed by path: building `want`/`have`
+    # as dicts made a duplicate path last-wins, so a receipt could carry a
+    # forged source beside the real one and still look bijective — the graph
+    # then asserted a blob absent from the snapshot (re-gate P1-1).
+    want = set()
     for e in universe:
         if isinstance(e, dict) and isinstance(e.get("path"), str):
-            want[e["path"]] = e.get("sha256")
-    have = {}
+            want.add((e["path"], e.get("sha256")))
+    have = set()
+    seen_paths = set()
     for s in core.get("sources", []) if isinstance(core.get("sources"), list) else []:
-        if isinstance(s, dict) and isinstance(s.get("path"), str):
-            have[s["path"]] = s.get("entry_digest")
-    for path in sorted(set(want) - set(have), key=path_sort_key):
+        if not (isinstance(s, dict) and isinstance(s.get("path"), str)):
+            continue
+        if s["path"] in seen_paths:
+            _f(f, "DUPLICATE_SOURCE_PATH", s["path"])
+        seen_paths.add(s["path"])
+        have.add((s["path"], s.get("entry_digest")))
+    want_paths = {p for p, _d in want}
+    have_paths = {p for p, _d in have}
+    for path in sorted(want_paths - have_paths, key=path_sort_key):
         _f(f, "SOURCE_MISSING_FOR_MEMBER", path)
-    for path in sorted(set(have) - set(want), key=path_sort_key):
+    for path in sorted(have_paths - want_paths, key=path_sort_key):
         _f(f, "SOURCE_NOT_IN_UNIVERSE", path)
-    for path in sorted(set(want) & set(have), key=path_sort_key):
-        if want[path] != have[path]:
+    for path, digest in sorted(have - want, key=lambda pd: path_sort_key(pd[0])):
+        if path in want_paths:
             _f(f, "SOURCE_DIGEST_MISMATCH", path)
 
     # Role classification: `kind` was only enum-checked, so a receipt could
@@ -938,7 +968,7 @@ def validate_warrant_receipt(snapshot, receipt, cas=None, expected_version="0.4"
         if not (isinstance(s, dict) and isinstance(s.get("path"), str)):
             continue
         path = s["path"]
-        if path not in want:
+        if path not in want_paths:
             continue  # already reported as SOURCE_NOT_IN_UNIVERSE
         derived_kind, derived_wid = classify_warrant_source(path, prefix)
         if s.get("kind") != derived_kind:
@@ -946,6 +976,32 @@ def validate_warrant_receipt(snapshot, receipt, cas=None, expected_version="0.4"
         elif derived_kind == "record" and s.get("claimed_wid") != derived_wid:
             # claimed_wid is a *claim read off the filename*, not free text
             _f(f, "CLAIMED_WID_NOT_PATH", path)
+
+    # A re-execution that RAN must have had its check blob to run: warrant
+    # SPEC §6 resolves the check as a blob, and §6(7) keeps "re-ran" and
+    # "could not run" observationally distinct. Claiming matched/mismatched
+    # over a blob absent from this subroot is an impossible verdict.
+    present = {s.get("entry_digest") for s in core.get("sources", [])
+               if isinstance(s, dict)}
+    committed_by_path = (view or {}).get("committed", {})
+    for s in core.get("sources", []) if isinstance(core.get("sources"), list) else []:
+        if not (isinstance(s, dict) and s.get("kind") == "record"):
+            continue
+        because = committed_by_path.get(s.get("path"), [])
+        for reason in s.get("reasons", []) if isinstance(s.get("reasons"), list) else []:
+            if not isinstance(reason, dict):
+                continue
+            outcome = reason.get("outcome")
+            if not isinstance(outcome, dict) or outcome.get("re_execution") not in (
+                    "matched", "mismatched"):
+                continue
+            try:
+                idx = int(str(reason.get("ptr", "")).rsplit("/", 1)[1])
+            except (ValueError, IndexError):
+                continue
+            committed = because[idx] if idx < len(because) else None
+            if isinstance(committed, dict) and committed.get("check") not in present:
+                _f(f, "CHECK_BLOB_ABSENT", "%s%s" % (s.get("path"), reason.get("ptr")))
     return f
 
 
@@ -1019,7 +1075,9 @@ def check_has(name, findings, *codes):
 
 def _fixture():
     """A fully valid (snapshot, receipt, cas) triple the mutation vectors edit."""
-    reason_obj = {"kind": "check", "runtime": "ski@v1", "check": "a" * 64,
+    check_bytes = b"policy"           # the blob sealed at .warrants/blobs/p
+    reason_obj = {"kind": "check", "runtime": "ski@v1",
+                  "check": sha256_hex(check_bytes),
                   "verdict": "pass", "transcript": "b" * 64}
     # body "warrant": "0.2" is the BODY-FORMAT version (ski@v1 era), while the
     # contract version "0.4" below is the SPEC document revision — warrant
