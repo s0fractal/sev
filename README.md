@@ -66,9 +66,19 @@ own clean round:
 
 | Artifact | Scope | Status |
 |---|---|---|
-| `ecosystem.snapshot@v0` + `warrant.verification-receipt@v0` core | sealed bundle, subroot descriptors, receipt core invariants, envelope binding | not frozen — freeze candidates named in the spec and proposal |
-| MVP projector | what `model/sev_projector.py` actually emits, per `mvp_predicates` in the shapes file | not frozen |
-| Full `sev@v0` target profile | every class and predicate in `conformance/prov-shapes.json`, including the OAIP/BOS quadrants | not frozen, and expected to move longest |
+| `ecosystem.snapshot@v0` **byte core** | logical-path and prefix rules, subroot descriptor + domain-separated digest, snapshot object with its normative array orders and self-hash, `parse_strict`'s complete refusal set | **FROZEN** at `7935400` — clean §7 gate, Kimi round 7 re-gate, zero P1 |
+| `warrant.verification-receipt@v0` core | receipt core invariants, envelope binding, counts, source union | **not frozen** — open draft; round 8 closed one P1, no clean receipt round yet |
+| MVP projector | what `model/sev_projector.py` actually emits, per `mvp_predicates` in the shapes file | **not frozen** |
+| Full `sev@v0` target profile | every class and predicate in `conformance/prov-shapes.json`, including the OAIP/BOS quadrants | **not frozen**, and expected to move longest |
+
+> **What the snapshot freeze does and does not say.** It covers exactly the
+> §7 surface listed above and not a byte more. It is *not* an approval of
+> the receipt core, the projector, or the target profile — each carries its
+> own verdict, and freezing one artifact must never read as freezing its
+> neighbours. Three times now a state called clean turned out unclean in an
+> adjacent layer (a reviewer's guard, this repo's guard, receipt semantics);
+> the byte contract survived all three, which is the reason it freezes and
+> the reason the note is this narrow.
 
 A round is clean **for an artifact** when it produces no P1 against that
 artifact. Rounds are still adversarial and still run against an exact SHA.

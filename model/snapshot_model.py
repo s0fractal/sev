@@ -730,7 +730,7 @@ def validate_receipt_core(core, descriptor=None, cas=None, view=None) -> list:
         # longer have (re-gate P1-1).
         parsed = None
         if cas is not None:
-            parsed = _resolve_record(f, cas, src, at)
+            parsed = _resolve_record(f, cas, src, at, issues)
             if parsed is not None and view is not None:
                 # the validated view: what the verdict was actually rendered
                 # over, handed to consumers so nothing re-reads the CAS and
@@ -1093,18 +1093,45 @@ def _bind_to_envelope(f, envelope, src, good_sigs, good_reasons, at, issues):
             "check_occurrences": len(expected_ptrs) + len(reason_malformed)}
 
 
-def _resolve_record(f, cas, src, at):
+def _resolve_record(f, cas, src, at, issues):
     """Resolve and parse a record's committed bytes ONCE per source.
-    Returns the parsed envelope or None (with a finding)."""
+
+    Returns the parsed envelope, or None when the bytes do not parse. A
+    parse failure is **derived evidence about the input**, not a defect of
+    the receipt: emitting it as a fatal finding made an honestly-reported
+    malformed record impossible to represent, contradicting the whole point
+    of a source-oriented receipt (round 8). So the derived outcome is joined
+    against the receipt's own acknowledgement:
+
+      acknowledged correctly  -> receipt valid; the ERR carries the record
+                                 into exclusions, exactly like ID_UNSOUND
+      missing or wrong        -> RECORD_UNREADABLE_UNREPORTED
+      claimed but bytes parse -> SPURIOUS_RECORD_UNREADABLE
+
+    `loaded` stays true throughout: the bytes were obtained.
+    """
     try:
         raw = cas_resolve(cas, src["entry_digest"])
     except (KeyError, SealViolation):
         _f(f, "RECORD_UNRESOLVABLE", at)
         return None
     obj, _pf = parse_strict(raw)
-    if obj is None or not isinstance(obj, dict):
-        _f(f, "RECORD_UNREADABLE", at)
+    parsed_ok = obj is not None and isinstance(obj, dict)
+    acknowledged = any(x["code"] == "RECORD_UNREADABLE" and x["severity"] == "ERR"
+                       for x in issues)
+    if not parsed_ok:
+        if not acknowledged:
+            _f(f, "RECORD_UNREADABLE_UNREPORTED", at)
+        else:
+            # An unparseable body has no derivable identity; leaving a WID
+            # behind would be an unverifiable residue over bytes nobody can
+            # read. Exclusion makes it harmless today, but the rule is
+            # cheaper than the exception.
+            if src.get("computed_wid") is not None or src.get("id_sound") is not False:
+                _f(f, "UNREADABLE_WITH_IDENTITY_CLAIM", at)
         return None
+    if acknowledged:
+        _f(f, "SPURIOUS_RECORD_UNREADABLE", at)
     return obj
 
 

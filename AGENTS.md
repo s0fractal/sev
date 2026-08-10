@@ -26,7 +26,15 @@ practice the same discipline on its own artifacts.
    URL and by digest inside documents. The ecosystem map
    (`protocol-ecosystem`) stays a map; this repo never appears in member
    repos as a dependency.
-7. **Review gates are adversarial.** A review round is counter-vector
+7. **Mutate the detector, not only its inputs.** A guard is code and can
+   be wrong in its own right. Twice a guard here was green over exactly what
+   it forbids — a harness that accepted falsy returns, and a stale-count
+   check whose pattern demanded an unhyphenated word. Neither was found by
+   mutating the data the guard reads. So a guard's mutation test must revert
+   the guard's own logic (its predicate, its regex, its comparator) with the
+   defect present, and a guard whose clause no vector can isolate must be
+   **labelled unisolatable in code** rather than counted as covered.
+8. **Review gates are adversarial.** A review round is counter-vector
    hunting by a fresh reviewer against an exact SHA, not a green suite. File
    rounds and responses under `reviews/`, and record verdicts in the profile
    ledger.

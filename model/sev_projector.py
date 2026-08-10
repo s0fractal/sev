@@ -1965,6 +1965,79 @@ def run_vectors():
                   lambda: ("disjoint", "activity+entity", "urn:x")
                   in _prov_violations(_both))
 
+    # round 8: malformed evidence, honestly acknowledged, is VALID evidence
+    def _unparseable(ack=True, wid_residue=False, spurious=False):
+        """Seal a record whose bytes do not parse (or, for `spurious`, one
+        that parses fine while the receipt claims it does not)."""
+        raw = sm.jcs({"body": {"warrant": "0.2", "decision": "accept",
+                               "subject": {}, "under": [], "because": [],
+                               "evidence": [], "actor": {"id": "signer@example"},
+                               "prior": [], "ts": 1},
+                      "sigs": []}) if spurious else b"{"
+        path = ".warrants/records/%s.json" % ("c" * 64)
+        files = {path: raw, ".warrants/blobs/p": b"policy"}
+        cs = {sm.sha256_hex(v): v for v in files.values()}
+        un = sm.seal_universe(files)
+        dd = sm.subroot_descriptor("warrant",
+                                   {"name": "warrant", "version": "0.4",
+                                    "spec_digest": sm.sha256_hex(b"spec")},
+                                   ".warrants/", un)
+        sn = sm.snapshot_object([dd], [])
+        bp = {e["path"]: e["sha256"] for e in un}
+        issues = ([{"code": "RECORD_UNREADABLE", "severity": "ERR",
+                    "at": {"kind": "path", "value": path}}] if ack else [])
+        rec_src = {"kind": "record", "path": path, "entry_digest": bp[path],
+                   "loaded": True,            # the bytes WERE obtained
+                   "claimed_wid": "c" * 64,
+                   "computed_wid": ("d" * 64 if wid_residue else None),
+                   "id_sound": False, "settlement": [], "signatures": [],
+                   "issues": issues, "reasons": []}
+        if spurious:
+            body = sm.parse_strict(raw)[0]["body"]
+            rec_src.update(computed_wid=sm.sha256_hex(sm.jcs(body)),
+                           id_sound=False)
+        srcs = sorted([
+            {"kind": "blob", "path": ".warrants/blobs/p",
+             "entry_digest": bp[".warrants/blobs/p"], "loaded": True,
+             "issues": []}, rec_src],
+            key=lambda x: (sm.path_sort_key(x["path"]), x["entry_digest"]))
+        cr = {"subroot_descriptor_digest": sm.subroot_descriptor_digest(dd),
+              "grade": "base", "trust_config_digest": None,
+              "execution_policy": {"runtimes": []},
+              "ok": not issues, "errors": len(issues), "warnings": 0,
+              "global_issues": [], "sources": srcs}
+        return sn, {"receipt": "warrant.verification-receipt@v0", "core": cr,
+                    "producer": {"impl": "x", "artifact_digest": None,
+                                 "spec": "0.4", "report_digest": "f" * 64,
+                                 "local_notes": []}}, cs
+
+    snA, rcA, csA = _unparseable(ack=True)
+    resA, fA = project(snA, rcA, csA)
+    sm.check_equal("acknowledged malformed evidence is a VALID receipt", fA, [])
+    sm.check_true("...and the record is excluded, not fatal",
+                  lambda: resA["view_manifest"]["sources_excluded"] == 1
+                  and [x["code"] for x in
+                       resA["view_manifest"]["exclusions"][0]["issues"]]
+                  == ["RECORD_UNREADABLE"])
+
+    snB, rcB, csB = _unparseable(ack=False)
+    resB, fB = project(snB, rcB, csB)
+    sm.check_true("unacknowledged malformed evidence is refused",
+                  lambda: resB is None and any(
+                      x["code"] == "RECORD_UNREADABLE_UNREPORTED" for x in fB))
+
+    snC, rcC, csC = _unparseable(spurious=True)
+    resC, fC = project(snC, rcC, csC)
+    sm.check_true("claiming unreadable over parseable bytes is refused",
+                  lambda: resC is None and any(
+                      x["code"] == "SPURIOUS_RECORD_UNREADABLE" for x in fC))
+
+    snD, rcD, csD = _unparseable(ack=True, wid_residue=True)
+    resD, fD = project(snD, rcD, csD)
+    sm.check_true("an unparseable body may not carry an identity claim",
+                  lambda: resD is None and any(
+                      x["code"] == "UNREADABLE_WITH_IDENTITY_CLAIM" for x in fD))
+
     # the MVP must not drop a source on a producer-selected `loaded`
     snLoad, rcLoad, csLoad = ski_fixture()
     recsrc = [x for x in rcLoad["core"]["sources"] if x["kind"] == "record"][0]

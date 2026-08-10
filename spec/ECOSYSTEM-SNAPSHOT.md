@@ -178,7 +178,24 @@ no governance (a bundle claims nothing on members' behalf); no
 registry/service (a snapshot is a file; SCITT-shaped concerns stay
 deliberately unclaimed).
 
-## 7. v0 freeze candidate (round-6 R6)
+## 7. v0 FROZEN core (frozen 2026-08-10 at `7935400`)
+
+**Status: frozen.** The surface below no longer changes without a new
+version tag. It froze after a clean §7 gate (Kimi round 7, zero P1) and its
+re-gate; the exact commit is recorded so a reader can diff against it.
+
+Frozen surface: the logical-path and prefix contract (§4), the subroot
+descriptor and its domain-separated digest (§1), the snapshot object with
+its normative array orders and zero-placeholder self-hash (§2), and
+`parse_strict`'s complete refusal set (pinned language-neutrally in
+`conformance/parse-strict.vectors.json`).
+
+**Not frozen by this act:** inter-snapshot expectations (§3), `unclaimed`
+placement details, `contract.spec_digest` policy — and, in the neighbouring
+documents, the receipt core, the MVP projector and the target profile. Each
+carries its own verdict; see the artifact table in `README.md`.
+
+## 7a. Historical note — the freeze candidate (round-6 R6)
 
 Exit criterion from the review spiral, adopted: **a round with zero P1
 findings freezes the core**. Candidate frozen surface — the minimum a second
