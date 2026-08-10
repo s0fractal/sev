@@ -284,6 +284,13 @@ Rules this shape enforces:
   share that one definition, so the graph can never claim to have used what
   the manifest reports as excluded.
 
+- **A producer-asserted field never relaxes a rule.** Receipt-reported
+  `valid`/`binding` are claims SEV cannot verify and whose producer is not
+  authenticated; they may constrain the receipt's internal consistency, but
+  they may not buy a severity downgrade for anything else in it. Malformed
+  signature occurrences are therefore always ERR — stricter than warrant
+  SPEC §5, deliberately, because the alternative is SEV re-implementing
+  Warrant's cryptography and thereby judging another protocol's bytes.
 - **Acknowledgement is semantic.** A malformed occurrence counts as
   reported only when the receipt carries an issue matching the normative
   `(pointer, code, severity)` tuple; an unrelated issue at the same pointer

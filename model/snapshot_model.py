@@ -931,28 +931,34 @@ MALFORMED_BODY_CODE = "MALFORMED_BODY_SCHEMA"
 
 def _expected_malformed_issues(envelope, expected_sigs, sig_malformed,
                                reason_malformed, good_sigs):
-    """[(pointer, code, {allowed severities})] the receipt MUST report."""
-    body = envelope.get("body") if isinstance(envelope, dict) else None
-    actor_id = None
-    if isinstance(body, dict) and isinstance(body.get("actor"), dict):
-        actor_id = body["actor"].get("id")
-    # a surviving, reported-valid signature by the body's own actor is what
-    # makes a malformed EXTRA co-signature non-fatal (SPEC §5)
-    actor_sig_ok = any(
-        s.get("valid") is True and s.get("actor") == actor_id
-        for s in good_sigs) and actor_id is not None
+    """[(pointer, code, {allowed severities})] the receipt MUST report.
+
+    **Malformed signatures are always ERR.** Warrant SPEC §5 does let a
+    malformed EXTRA co-signature be survivable while a valid signature by
+    `body.actor.id` remains — but deciding that requires knowing the actor
+    signature is *cryptographically* valid, and the only thing SEV has is
+    the receipt's own `valid` field. Letting a producer-asserted claim
+    relax a rule applied to the same receipt is self-authorisation: the
+    shipped fixture already claimed `valid: true` for a key/signature pair
+    that fails `warrant-sig-v1` verification, and thereby bought its
+    malformed extra signature a WARN.
+
+    SEV also must not re-implement Warrant's cryptography to settle this —
+    that is the ownership boundary this repository exists to hold: each
+    protocol judges its own bytes. So the survivable path is **not
+    available** to SEV, and this matrix is deliberately *not* called
+    Warrant-consistent: it is strictly stronger, and fails closed. If a
+    future receipt carries an independently verifiable validity judgement
+    (a signed receipt, or Warrant's own verifier output bound to it), the
+    WARN path can be reinstated on that basis, never on this one.
+    """
     out = []
     for ptr in sig_malformed:
-        if ptr == "/sigs":
-            out.append((ptr, MALFORMED_ENVELOPE_CODE, {"ERR"}))
-        else:
-            out.append((ptr, MALFORMED_SIG_CODE,
-                        {"WARN", "ERR"} if actor_sig_ok else {"ERR"}))
+        out.append((ptr, MALFORMED_ENVELOPE_CODE if ptr == "/sigs"
+                    else MALFORMED_SIG_CODE, {"ERR"}))
     for ptr in reason_malformed:
-        if ptr == "/body/because":
-            out.append((ptr, MALFORMED_BODY_CODE, {"ERR"}))
-        else:
-            out.append((ptr, MALFORMED_REASON_CODE, {"ERR"}))
+        out.append((ptr, MALFORMED_BODY_CODE if ptr == "/body/because"
+                    else MALFORMED_REASON_CODE, {"ERR"}))
     return out
 
 
@@ -1371,6 +1377,15 @@ def check_has(name, findings, *codes):
 
 # ------------------------------------------------------------------ fixtures
 
+def signature_issues(entries):
+    """The WARN occurrences an honest receipt owes for signatures it reports
+    as not verifying. Fixture signatures here are synthetic placeholders, so
+    claiming they verified would assert what this repo cannot back."""
+    return [{"code": "INVALID_SIGNATURE", "severity": "WARN",
+             "at": {"kind": "json-pointer", "value": "/sigs/%d" % i}}
+            for i, _e in enumerate(entries)]
+
+
 def _fixture():
     """A fully valid (snapshot, receipt, cas) triple the mutation vectors edit."""
     check_bytes = b"policy"           # the blob sealed at .warrants/blobs/p
@@ -1405,10 +1420,13 @@ def _fixture():
          "id_sound": False, "settlement": [],
          # the receipt must account for every signature the envelope carries
          "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
-                         "key": k, "valid": True, "binding": "unverified"}
+                         "key": k, "valid": False, "binding": "unverified"}
                         for d, m, a, k in envelope_signature_entries(record)[0]],
-         "issues": [{"code": "ID_UNSOUND", "severity": "ERR",
-                     "at": {"kind": "path", "value": ".warrants/records/r.json"}}],
+         "issues": sorted(
+             [{"code": "ID_UNSOUND", "severity": "ERR",
+               "at": {"kind": "path", "value": ".warrants/records/r.json"}}]
+             + signature_issues(envelope_signature_entries(record)[0]),
+             key=lambda x: jcs(x)),
          "reasons": [{"ptr": "/because/0", "kind": "check", "runtime": "ski@v1",
                       "reason_digest": reason_digest,
                       "outcome": {"re_execution": "matched", "claimed_verdict": "pass",
@@ -1422,7 +1440,9 @@ def _fixture():
                 {"runtime": "ski@v1", "semantics": "sigma-book-i@v0.5",
                  "semantics_digest": sha256_hex(b"book1"), "budget_unit": "atp",
                  "ceiling": 1000}]},
-            "ok": False, "errors": 1, "warnings": 0, "global_issues": [],
+            "ok": False, "errors": 1,
+            "warnings": len(envelope_signature_entries(record)[0]),
+            "global_issues": [],
             "sources": sources}
     receipt = {"receipt": "warrant.verification-receipt@v0", "core": core,
                "producer": {"impl": "model", "artifact_digest": None, "spec": "0.4",

@@ -6,7 +6,7 @@
 > a normative copy and instead pins the Warrant artifact/version/digest, and
 > this document remains here as provenance, marked superseded.
 
-**Status:** PROPOSAL SKETCH **rev 9** (2026-08-10), design-only, not filed.
+**Status:** PROPOSAL SKETCH **rev 10** (2026-08-10), design-only, not filed.
 Rev 5 (fifth Codex review, AMEND — compositional layer): the public verdict
 is now **`validate_warrant_receipt(snapshot, receipt, cas)`** in the model —
 descriptor lookup by digest, semantic role check (incl. non-null
@@ -204,6 +204,26 @@ JCS-canonical I-JSON per warrant SPEC §4; closed schemas; one type tag.
 - ▲ **`global_issues[]`** carries store- and settlement-level problems that
   belong to no single source file (invalid threshold policy, unverified
   genesis, missing jurisdiction root).
+- ▲ **No producer-asserted field may relax a rule applied to the same
+  receipt (rev 10).** The severity matrix briefly let a malformed EXTRA
+  co-signature be WARN when a valid signature by `body.actor.id` survived —
+  per warrant SPEC §5 — but the only evidence of that validity was the
+  receipt's own `valid` field. The shipped fixture already claimed
+  `valid: true` over a key/signature pair that cannot verify under
+  `warrant-sig-v1`, and thereby bought its own downgrade. A claim deciding
+  how strictly its siblings are judged is self-authorisation.
+
+  Two honest resolutions existed: verify Ed25519 independently, or drop the
+  downgrade. **SEV takes the second**, because the first would make SEV a
+  second Warrant verifier — the ownership boundary this repository exists to
+  hold is that each protocol judges its own bytes. So malformed signature
+  occurrences are **always ERR**, this matrix is deliberately *not* called
+  Warrant-consistent (it is strictly stronger and fails closed), and the
+  §5 survivable path may be reinstated only on an independently verifiable
+  basis — a signed receipt, or Warrant's own verifier output bound to it.
+  Fixture signatures are now reported `valid: false` with the matching
+  `INVALID_SIGNATURE` occurrences: they are synthetic placeholders, and
+  claiming they verified would assert what this repository cannot back.
 - ▲ **Acknowledging a malformed occurrence is semantic, not positional
   (rev 9).** The receipt must carry an issue matching a normative
   `(pointer, code, severity)` tuple — matching the JSON pointer alone let any

@@ -465,11 +465,14 @@ def fixture(extra_files=None, misfiled_as=None):
          "loaded": True, "claimed_wid": filed_as, "computed_wid": wid,
          "id_sound": filed_as == wid, "settlement": [],
          "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
-                         "key": k, "valid": True, "binding": "unverified"}
+                         "key": k, "valid": False, "binding": "unverified"}
                         for d, m, a, k in sm.envelope_signature_entries(record)[0]],
-         "issues": ([] if filed_as == wid else
-                    [{"code": "ID_UNSOUND", "severity": "ERR",
-                      "at": {"kind": "path", "value": rec_path}}]),
+         "issues": sorted(
+             sm.signature_issues(sm.envelope_signature_entries(record)[0])
+             + ([] if filed_as == wid else
+                [{"code": "ID_UNSOUND", "severity": "ERR",
+                  "at": {"kind": "path", "value": rec_path}}]),
+             key=lambda x: sm.jcs(x)),
          "reasons": [{"ptr": "/because/0", "kind": "check", "runtime": "ski@v1",
                       "reason_digest": sm.sha256_hex(sm.jcs(reason_obj)),
                       "outcome": {"re_execution": "matched",
@@ -488,7 +491,8 @@ def fixture(extra_files=None, misfiled_as=None):
                  "semantics_digest": sm.sha256_hex(b"book1"),
                  "budget_unit": "atp", "ceiling": 1000}]},
             "ok": filed_as == wid, "errors": 0 if filed_as == wid else 1,
-            "warnings": 0, "global_issues": [], "sources": sources}
+            "warnings": len(sm.envelope_signature_entries(record)[0]),
+            "global_issues": [], "sources": sources}
     receipt = {"receipt": "warrant.verification-receipt@v0", "core": core,
                "producer": {"impl": "sev-fixture", "artifact_digest": None,
                             "spec": "0.4", "report_digest": "f" * 64,
@@ -599,8 +603,8 @@ def run_vectors():
                   and vm["sources_projected"] == 1
                   and vm["sources_projected"] + vm["sources_excluded"]
                   == vm["sources_in_receipts"]
-                  and [x["code"] for x in vm["exclusions"][0]["issues"]]
-                  == ["ID_UNSOUND"])
+                  and "ID_UNSOUND" in
+                  [x["code"] for x in vm["exclusions"][0]["issues"]])
     sm.check_true("excluded record has no graph node",
                   lambda: b"urn:wrt:record:" not in res4["nquads"])
 
@@ -623,16 +627,19 @@ def run_vectors():
     def _two_occurrences(r):
         src = r["core"]["sources"][1]
         at = {"kind": "path", "value": src["path"]}
-        src["issues"] = [
+        src["issues"] = sorted(src["issues"] + [
             {"code": "ID_UNSOUND", "severity": "ERR", "at": dict(at, occurrence=0)},
-            {"code": "ID_UNSOUND", "severity": "ERR", "at": dict(at, occurrence=1)}]
-        r["core"].update(ok=False, errors=2)
+            {"code": "ID_UNSOUND", "severity": "ERR", "at": dict(at, occurrence=1)}],
+            key=lambda x: sm.jcs(x))
+        r["core"].update(ok=False, errors=r["core"]["errors"] + 2)
     snap5, receipt5, cas5 = fixture(misfiled_as="b" * 64)
     _two_occurrences(receipt5)
     res5, f5 = project(snap5, receipt5, cas5)
     sm.check_true("two same-code issues at distinct occurrences both survive",
-                  lambda: f5 == []
-                  and len(res5["view_manifest"]["exclusions"][0]["issues"]) == 2)
+                  lambda: f5 == [] and sum(
+                      1 for x in res5["view_manifest"]["exclusions"][0]["issues"]
+                      if x["code"] == "ID_UNSOUND"
+                      and "occurrence" in x["at"]) == 2)
 
     # re-gate P1-3: non-record sources are actually projected, not just counted
     sm.check_true("blob/genesis/other emit a source entity",
@@ -793,9 +800,9 @@ def run_vectors():
              "claimed_wid": w, "computed_wid": w, "id_sound": True,
              "settlement": [],
              "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
-                             "key": k, "valid": True, "binding": "unverified"}
+                             "key": k, "valid": False, "binding": "unverified"}
                             for d, m, a, k in sm.envelope_signature_entries(recd)[0]],
-             "issues": [],
+             "issues": sm.signature_issues(sm.envelope_signature_entries(recd)[0]),
              "reasons": [{"ptr": "/because/0", "kind": rob["kind"],
                           "runtime": rob.get("runtime", runtime),
                           "reason_digest": sm.sha256_hex(sm.jcs(rob)),
@@ -811,8 +818,9 @@ def run_vectors():
                   {"runtime": policy_rt or runtime, "semantics": "s",
                    "semantics_digest": sm.sha256_hex(b"book1"),
                    "budget_unit": "atp", "ceiling": 1000}]},
-              "ok": True, "errors": 0, "warnings": 0, "global_issues": [],
-              "sources": srcs}
+              "ok": True, "errors": 0,
+              "warnings": len(sm.envelope_signature_entries(recd)[0]),
+              "global_issues": [], "sources": srcs}
         return sn, {"receipt": "warrant.verification-receipt@v0", "core": cr,
                     "producer": {"impl": "x", "artifact_digest": None,
                                  "spec": "0.4", "report_digest": "f" * 64,
@@ -929,9 +937,9 @@ def run_vectors():
              "loaded": True, "claimed_wid": widG, "computed_wid": widG,
              "id_sound": True, "settlement": [],
              "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
-                             "key": k, "valid": True, "binding": "unverified"}
+                             "key": k, "valid": False, "binding": "unverified"}
                             for d, m, a, k in sm.envelope_signature_entries(recG)[0]],
-             "issues": [],
+             "issues": sm.signature_issues(sm.envelope_signature_entries(recG)[0]),
              "reasons": [{"ptr": "/because/0", "kind": "check",
                           "runtime": "ski@v1",
                           "reason_digest": sm.sha256_hex(sm.jcs(ghost)),
@@ -952,9 +960,11 @@ def run_vectors():
         src["reasons"][0]["outcome"].update(
             re_execution="unverified", observed_verdict=None,
             observed_result=None, atp_spent=None, failure_code="MISSING_BLOB")
-        src["issues"] = [{"code": "REASON_UNVERIFIED", "severity": "WARN",
-                          "at": {"kind": "json-pointer", "value": "/because/0"}}]
-        r["core"].update(warnings=1)
+        src["issues"] = sorted(src["issues"] + [
+            {"code": "REASON_UNVERIFIED", "severity": "WARN",
+             "at": {"kind": "json-pointer", "value": "/because/0"}}],
+            key=lambda x: sm.jcs(x))
+        r["core"].update(warnings=r["core"]["warnings"] + 1)
     receiptG2 = json.loads(json.dumps(receiptG))
     _missing(receiptG2)
     resG2, fG2 = project(snapG, receiptG2, casG)
@@ -1073,9 +1083,9 @@ def run_vectors():
              "claimed_wid": w, "computed_wid": w, "id_sound": True,
              "settlement": [],
              "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
-                             "key": k, "valid": True, "binding": "unverified"}
+                             "key": k, "valid": False, "binding": "unverified"}
                             for d, m, a, k in sm.envelope_signature_entries(recd)[0]],
-             "issues": [],
+             "issues": sm.signature_issues(sm.envelope_signature_entries(recd)[0]),
              "reasons": [{"ptr": "/because/0", "kind": "check", "runtime": "ski@v1",
                           "reason_digest": sm.sha256_hex(sm.jcs(rob)),
                           "outcome": {"re_execution": "matched",
@@ -1091,7 +1101,8 @@ def run_vectors():
                   {"runtime": "ski@v1", "semantics": "s",
                    "semantics_digest": sm.sha256_hex(b"book1"),
                    "budget_unit": "atp", "ceiling": 1000}]},
-              "ok": errs == 0, "errors": errs, "warnings": 0,
+              "ok": errs == 0, "errors": errs,
+              "warnings": len(sm.envelope_signature_entries(recd)[0]),
               "global_issues": [], "sources": srcs}
         return sn, {"receipt": "warrant.verification-receipt@v0", "core": cr,
                     "producer": {"impl": "x", "artifact_digest": None,
@@ -1153,9 +1164,11 @@ def run_vectors():
     srcM["reasons"][0]["outcome"].update(
         re_execution="unverified", observed_verdict=None, observed_result=None,
         atp_spent=None, failure_code="RUNTIME_UNAVAILABLE")
-    srcM["issues"] = [{"code": "REASON_UNVERIFIED", "severity": "WARN",
-                       "at": {"kind": "json-pointer", "value": "/because/0"}}]
-    receiptM["core"].update(warnings=1)
+    srcM["issues"] = sorted(srcM["issues"] + [
+        {"code": "REASON_UNVERIFIED", "severity": "WARN",
+         "at": {"kind": "json-pointer", "value": "/because/0"}}],
+        key=lambda x: sm.jcs(x))
+    receiptM["core"].update(warnings=receiptM["core"]["warnings"] + 1)
     receiptM["core"]["execution_policy"]["runtimes"] = []
     resM, fM = project(snapM, receiptM, casM)
     sm.check_equal("a run with no declared semantics still validates", fM, [])
@@ -1374,7 +1387,9 @@ def run_vectors():
                  {"runtime": "ski@v1", "semantics": "sigma-book-i@v0.5",
                   "semantics_digest": sm.sha256_hex(b"book1"),
                   "budget_unit": "atp", "ceiling": 1000}]},
-             "ok": True, "errors": 0, "warnings": 0, "global_issues": [],
+             "ok": True, "errors": 0,
+             "warnings": len(sm.envelope_signature_entries(recP)[0]),
+             "global_issues": [],
              "sources": sorted([
                  {"kind": "blob", "path": ".warrants/blobs/p",
                   "entry_digest": bpP[".warrants/blobs/p"], "loaded": True,
@@ -1383,11 +1398,12 @@ def run_vectors():
                   "loaded": True, "claimed_wid": widP, "computed_wid": widP,
                   "id_sound": True, "settlement": [],
                   "signatures": [{"sig_digest": d, "multiplicity": m,
-                                  "actor": a, "key": k, "valid": True,
+                                  "actor": a, "key": k, "valid": False,
                                   "binding": "unverified"}
                                  for d, m, a, k in
                                  sm.envelope_signature_entries(recP)[0]],
-                  "issues": [],
+                  "issues": sm.signature_issues(
+                      sm.envelope_signature_entries(recP)[0]),
                   "reasons": [{"ptr": "/because/1", "kind": "check",
                                "runtime": "ski@v1",
                                "reason_digest": sm.sha256_hex(sm.jcs(check_obj)),
@@ -1454,9 +1470,9 @@ def run_vectors():
              "claimed_wid": w, "computed_wid": w, "id_sound": True,
              "settlement": [],
              "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
-                             "key": k, "valid": True, "binding": "unverified"}
+                             "key": k, "valid": False, "binding": "unverified"}
                             for d, m, a, k in entries],
-             "issues": [], "reasons": reasons}],
+             "issues": sm.signature_issues(entries), "reasons": reasons}],
             key=lambda s: (sm.path_sort_key(s["path"]), s["entry_digest"]))
         cr = {"subroot_descriptor_digest": sm.subroot_descriptor_digest(dd),
               "grade": "base", "trust_config_digest": None,
@@ -1464,7 +1480,8 @@ def run_vectors():
                   {"runtime": "ski@v1", "semantics": "sigma-book-i@v0.5",
                    "semantics_digest": sm.sha256_hex(b"book1"),
                    "budget_unit": "atp", "ceiling": 1000}]},
-              "ok": True, "errors": 0, "warnings": 0, "global_issues": [],
+              "ok": True, "errors": 0, "warnings": len(entries),
+              "global_issues": [],
               "sources": srcs}
         return sn, {"receipt": "warrant.verification-receipt@v0", "core": cr,
                     "producer": {"impl": "x", "artifact_digest": None,
@@ -1544,20 +1561,32 @@ def run_vectors():
                   lambda: "L-NOSIG" in [e["code"] for e in
                                         resR["loss_manifest"]["entries"]])
 
-    # SPEC §5 path: a surviving valid actor-signature makes a malformed EXTRA
-    # co-signature a WARN, and the record stays in the graph
+    # The producer-asserted `valid` field must NOT buy a severity downgrade.
+    # The fixture below claims a valid actor signature over a key/signature
+    # pair that cannot verify under warrant-sig-v1 — exactly the shape that
+    # previously purchased a WARN for its malformed extra signature.
     snX, rcX, csX = _with_committed(
         sigs=[{"actor": "signer@example", "key": "c" * 64, "sig": "d" * 128}, 7])
     rec_srcX = [x for x in rcX["core"]["sources"] if x["kind"] == "record"][0]
-    rec_srcX["signatures"][0]["valid"] = True
+    rec_srcX["signatures"][0]["valid"] = True          # self-asserted
     rec_srcX["issues"] = [{"code": "MALFORMED_SIGNATURE", "severity": "WARN",
                            "at": {"kind": "json-pointer", "value": "/sigs/1"}}]
     rcX["core"].update(warnings=1)
     resX, fX2 = project(snX, rcX, csX)
-    sm.check_equal("malformed extra co-signature beside a valid actor signature "
-                   "is a WARN", fX2, [])
-    sm.check_true("...the record is still projected",
-                  lambda: resX["view_manifest"]["sources_excluded"] == 0)
+    sm.check_true("a self-asserted valid signature cannot downgrade to WARN",
+                  lambda: resX is None
+                  and any(x["code"] == "MALFORMED_ENVELOPE_UNREPORTED" for x in fX2))
+
+    # ...and the honest ERR path is accepted, excluding the record
+    rcX2 = json.loads(json.dumps(rcX))
+    rec2 = [x for x in rcX2["core"]["sources"] if x["kind"] == "record"][0]
+    rec2["issues"] = [{"code": "MALFORMED_SIGNATURE", "severity": "ERR",
+                       "at": {"kind": "json-pointer", "value": "/sigs/1"}}]
+    rcX2["core"].update(ok=False, errors=1, warnings=0)
+    resX2, fX3 = project(snX, rcX2, csX)
+    sm.check_equal("malformed extra signature as ERR is accepted", fX3, [])
+    sm.check_true("...and the record is excluded",
+                  lambda: resX2["view_manifest"]["sources_excluded"] == 1)
 
     # re-gate P2-1: the empty-corpus guard needs its own negative control
     code_guard = (
