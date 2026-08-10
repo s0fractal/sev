@@ -273,11 +273,22 @@ Rules this shape enforces:
   `mismatched`.** An `unverified` run used nothing — asserting otherwise
   describes an execution that did not happen. `MISSING_BLOB` keeps the weak
   reference and nothing more.
-- **`matched`/`mismatched` require the check blob to exist in this subroot**
-  (`CHECK_BLOB_ABSENT`): warrant SPEC §6 resolves the check as a blob, and
-  §6(7) keeps "re-ran" and "could not run" observationally distinct, so a
-  re-execution over an unsealed blob is an impossible verdict, not a
-  detail.
+- **`matched`/`mismatched` require the check blob to be AVAILABLE in this
+  subroot** (`CHECK_BLOB_ABSENT`): warrant SPEC §6 resolves the check as a
+  blob, and §6(7) keeps "re-ran" and "could not run" observationally
+  distinct, so a re-execution over an unavailable blob is an impossible
+  verdict, not a detail. "Available" is a single predicate — the source is
+  a `blob`, is loaded, and carries no ERR issue. A digest that exists only
+  as a README (`other`), as a record, or as a blob the manifest excludes
+  does **not** resolve a check reference; the verdict and the projection
+  share that one definition, so the graph can never claim to have used what
+  the manifest reports as excluded.
+
+- **Projection reads only the validated view.** The verdict freezes private
+  copies of snapshot, receipt, descriptor and committed reasons, and the
+  projector consumes those — never the caller's objects, never the store.
+  Otherwise a caller whose objects change between the two phases gets a
+  graph asserting a core the validator never saw.
 
 Every `sigma:*` value is copied from the receipt's structured
 `reasons[].outcome`, never computed by the projector — rev 2.2 note: this is

@@ -26,6 +26,7 @@ order and value domains open (round 5). v3 closes the round-5 order:
 Stdlib only. Exit status is the verdict.  Run:  python3 snapshot_model.py
 """
 
+import copy
 import hashlib
 import json
 import os
@@ -894,11 +895,59 @@ def _resolve_reason(f, obj, reason, rat):
 
 # ------------------------------------------------- composed public verdict
 
+def available_blob_digests(core) -> set:
+    """Digests a check reference may legitimately resolve to.
+
+    Not "some source has this digest": the source must BE a blob, be loaded,
+    and carry no ERR judgement — otherwise a check could resolve to a README
+    (`other`), to a record, or to a blob the manifest simultaneously reports
+    as excluded, with the run claiming it used exactly that (re-gate P1-2).
+    One definition, used by both the verdict and the projection."""
+    out = set()
+    if not isinstance(core, dict) or not isinstance(core.get("sources"), list):
+        return out
+    for s in core["sources"]:
+        if not isinstance(s, dict) or s.get("kind") != "blob":
+            continue
+        if s.get("loaded") is not True:
+            # Defense in depth, and honestly labelled as such: no vector can
+            # isolate this clause today, because `loaded:false` already
+            # requires an ERR issue (UNLOADED_WITHOUT_ERR) and the clause
+            # below fires first. Removing it currently changes nothing —
+            # mutation-tested and stated rather than counted as covered.
+            continue
+        issues = s.get("issues")
+        if isinstance(issues, list) and any(
+                isinstance(x, dict) and x.get("severity") == "ERR" for x in issues):
+            continue
+        if isinstance(s.get("entry_digest"), str):
+            out.add(s["entry_digest"])
+    return out
+
+
+def _freeze(value):
+    """A private detached copy; hostile shapes fall back to the original."""
+    try:
+        return copy.deepcopy(value)
+    except Exception:  # noqa: BLE001
+        return value
+
+
 def validate_warrant_receipt(snapshot, receipt, cas=None, expected_version="0.4",
                              view=None) -> list:
     """THE public verdict tying receipt to snapshot: descriptor lookup, role
     check, exact universe<->sources bijection, per-source digests, then the
     internal core invariants. Total over any parsed JSON values."""
+    # Freeze the inputs BEFORE judging them. A caller whose objects change
+    # between reads could otherwise show the validator a clean core and the
+    # projector another one — the CAS TOCTOU was closed one round earlier,
+    # this is the same seam on receipt and snapshot (re-gate P1-1).
+    if view is not None:
+        snapshot = _freeze(snapshot)
+        receipt = _freeze(receipt)
+        view["snapshot"] = snapshot
+        view["receipt"] = receipt
+
     f = list(validate_snapshot(snapshot, cas))
     if not isinstance(receipt, dict):
         _f(f, "NOT_OBJECT", "/receipt")
@@ -924,6 +973,9 @@ def validate_warrant_receipt(snapshot, receipt, cas=None, expected_version="0.4"
         _f(f, "RECEIPT_DESCRIPTOR_MISSING", "/core/subroot_descriptor_digest")
         return f
     descriptor = {k: v for k, v in wrapper.items() if k != "digest"}
+    if view is not None:
+        view["descriptor"] = descriptor
+        view["core"] = core
     f.extend(validate_warrant_descriptor_role(descriptor, expected_version))
 
     universe = descriptor.get("universe")
@@ -981,8 +1033,7 @@ def validate_warrant_receipt(snapshot, receipt, cas=None, expected_version="0.4"
     # SPEC §6 resolves the check as a blob, and §6(7) keeps "re-ran" and
     # "could not run" observationally distinct. Claiming matched/mismatched
     # over a blob absent from this subroot is an impossible verdict.
-    present = {s.get("entry_digest") for s in core.get("sources", [])
-               if isinstance(s, dict)}
+    present = available_blob_digests(core)
     committed_by_path = (view or {}).get("committed", {})
     for s in core.get("sources", []) if isinstance(core.get("sources"), list) else []:
         if not (isinstance(s, dict) and s.get("kind") == "record"):

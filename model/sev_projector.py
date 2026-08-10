@@ -166,9 +166,15 @@ def project(snapshot, receipt, cas) -> tuple:
     findings = sm.validate_warrant_receipt(snapshot, receipt, cas, view=view)
     if findings:
         return None, findings
+    # From here on the projector reads ONLY the validated view: the private
+    # frozen copies the verdict was actually rendered over. Reading the
+    # caller's receipt/snapshot again would reopen the verdict->assertion
+    # seam on the objects themselves (re-gate P1-1).
     committed_by_path = view.get("committed", {})
+    snapshot = view["snapshot"]
+    receipt = view["receipt"]
 
-    core = receipt["core"]
+    core = view["core"]
     core_digest = sm.sha256_hex(sm.jcs(core))
     vgraph = iri_verify_graph(core_digest)
     g = Graph()
@@ -186,8 +192,10 @@ def project(snapshot, receipt, cas) -> tuple:
     subroot_digest = core["subroot_descriptor_digest"]
     runtime_semantics = {r["runtime"]: r["semantics_digest"]
                          for r in core["execution_policy"]["runtimes"]}
-    # what actually exists in this subroot, by content digest
-    source_digests = {s["entry_digest"] for s in core["sources"]}
+    # what a check reference may legitimately resolve to: loaded, ERR-free
+    # blob sources of THIS subroot — never a README, a record, or a source
+    # the manifest simultaneously excludes
+    source_digests = sm.available_blob_digests(core)
 
     def _exclude(src, projection_reason):
         """Exclusions carry the receipt's issues VERBATIM — the exact ordered
@@ -873,27 +881,146 @@ def run_vectors():
                       ln.startswith("<urn:wrt:reason:") and "prov#used" in ln
                       for ln in resG2["nquads"].decode().splitlines()))
 
-    # re-gate P1-4: the projector reads no store after the verdict
-    class OnceCAS(dict):
-        """A store that disappears after validation — a projector that
-        re-reads would silently lose edges instead of failing."""
+    # re-gate P1-4 + P2: the store is REVOKED at the verdict boundary, so a
+    # projector that re-read it would fail rather than quietly lose edges.
+    # (The previous OnceCAS never set `exhausted`, which made this guard
+    # vacuous — the old projector would have passed it.)
+    class RevokedAfterVerdict(dict):
         def __init__(self, base):
             super().__init__(base)
-            self.reads = 0
-            self.exhausted = False
+            self.revoked = False
+            self.reads_after_verdict = 0
 
         def __getitem__(self, k):
-            if self.exhausted:
-                raise KeyError(k)
-            self.reads += 1
+            if self.revoked:
+                self.reads_after_verdict += 1
+                raise KeyError("store revoked at the verdict boundary")
             return super().__getitem__(k)
 
     snapH, receiptH, casH = fixture()
-    once = OnceCAS(casH)
-    resH, fH = project(snapH, receiptH, once)
+    revoked = RevokedAfterVerdict(casH)
+    real_validate = sm.validate_warrant_receipt
+
+    def _revoke_after(*a, **kw):
+        out = real_validate(*a, **kw)
+        revoked.revoked = True          # exactly at the verdict boundary
+        return out
+    sm.validate_warrant_receipt = _revoke_after
+    try:
+        resH, fH = project(snapH, receiptH, revoked)
+    finally:
+        sm.validate_warrant_receipt = real_validate
     baseline, _ = project(snapH, receiptH, casH)
-    sm.check_equal("projection over a one-shot store is byte-identical",
+    sm.check_equal("projection is byte-identical with the store revoked",
                    resH["nquads"], baseline["nquads"])
+    sm.check_equal("zero store reads after the verdict",
+                   revoked.reads_after_verdict, 0)
+
+    # re-gate P1-1: the caller's objects are mutated exactly at the verdict
+    # boundary. Only a private frozen view can survive this; a projector
+    # reading receipt["core"] or snapshot again picks the poison up.
+    snapI, receiptI, casI = fixture()
+    clean, _ = project(snapI, receiptI, casI)
+    snapJ, receiptJ, casJ = fixture()
+    real_validate2 = sm.validate_warrant_receipt
+
+    def _poison_after(*a, **kw):
+        out = real_validate2(*a, **kw)
+        rt = receiptJ["core"]["execution_policy"]["runtimes"][0]
+        rt["semantics_digest"] = "f" * 64
+        receiptJ["core"]["sources"][1]["reasons"][0]["outcome"][
+            "observed_result"] = "not-a-nodehash"
+        snapJ["bundle_root"] = "0" * 64
+        return out
+    sm.validate_warrant_receipt = _poison_after
+    try:
+        resJ, fJ = project(snapJ, receiptJ, casJ)
+    finally:
+        sm.validate_warrant_receipt = real_validate2
+    sm.check_equal("inputs poisoned at the verdict boundary cannot reach the graph",
+                   resJ["nquads"], clean["nquads"])
+    sm.check_equal("...nor the view manifest",
+                   resJ["view_manifest"]["bundle_root"],
+                   clean["view_manifest"]["bundle_root"])
+    sm.check_true("no evil semantics or invalid result present",
+                  lambda: b"f" * 64 not in resJ["nquads"]
+                  and b"not-a-nodehash" not in resJ["nquads"])
+
+    # re-gate P1-2: a check digest must resolve to an AVAILABLE BLOB
+    def _check_resolves_to(kind_path, extra=None, break_blob=None):
+        cb = sm.sha256_hex(b"policy")
+        rob = {"kind": "check", "runtime": "ski@v1", "check": cb,
+               "verdict": "pass", "transcript": "b" * 64}
+        bod = {"warrant": "0.2", "decision": "accept", "subject": {}, "under": [],
+               "because": [rob], "evidence": [], "actor": {"id": "x"},
+               "prior": [], "ts": 1}
+        recd = {"body": bod,
+                "sigs": [{"actor": "x", "key": "c" * 64, "sig": "d" * 128}]}
+        w = sm.sha256_hex(sm.jcs(bod))
+        fl = {".warrants/records/%s.json" % w: sm.jcs(recd), kind_path: b"policy"}
+        fl.update(extra or {})
+        cs = {sm.sha256_hex(v): v for v in fl.values()}
+        un = sm.seal_universe(fl)
+        dd = sm.subroot_descriptor("warrant",
+                                   {"name": "warrant", "version": "0.4",
+                                    "spec_digest": sm.sha256_hex(b"spec")},
+                                   ".warrants/", un)
+        sn = sm.snapshot_object([dd], [])
+        bp = {e["path"]: e["sha256"] for e in un}
+        rp = ".warrants/records/%s.json" % w
+        others = []
+        for pth in fl:
+            if pth == rp:
+                continue
+            entry = {"kind": sm.classify_warrant_source(pth, ".warrants/")[0],
+                     "path": pth, "entry_digest": bp[pth], "loaded": True,
+                     "issues": []}
+            if break_blob and entry["kind"] == "blob":
+                # "err": readable but judged bad; "unloaded": never read at all
+                entry["issues"] = [{"code": "BLOB_UNREADABLE", "severity": "ERR",
+                                    "at": {"kind": "path", "value": pth}}]
+                if break_blob == "unloaded":
+                    entry["loaded"] = False
+            others.append(entry)
+        srcs = sorted(others + [
+            {"kind": "record", "path": rp, "entry_digest": bp[rp], "loaded": True,
+             "claimed_wid": w, "computed_wid": w, "id_sound": True,
+             "settlement": [], "signatures": [], "issues": [],
+             "reasons": [{"ptr": "/because/0", "kind": "check", "runtime": "ski@v1",
+                          "reason_digest": sm.sha256_hex(sm.jcs(rob)),
+                          "outcome": {"re_execution": "matched",
+                                      "claimed_verdict": "pass",
+                                      "observed_verdict": "pass",
+                                      "observed_result": "e" * 64,
+                                      "atp_spent": 7, "failure_code": None}}]}],
+            key=lambda s: (sm.path_sort_key(s["path"]), s["entry_digest"]))
+        errs = sum(1 for s in srcs for i in s["issues"] if i["severity"] == "ERR")
+        cr = {"subroot_descriptor_digest": sm.subroot_descriptor_digest(dd),
+              "grade": "base", "trust_config_digest": None,
+              "execution_policy": {"runtimes": [
+                  {"runtime": "ski@v1", "semantics": "s",
+                   "semantics_digest": sm.sha256_hex(b"book1"),
+                   "budget_unit": "atp", "ceiling": 1000}]},
+              "ok": errs == 0, "errors": errs, "warnings": 0,
+              "global_issues": [], "sources": srcs}
+        return sn, {"receipt": "warrant.verification-receipt@v0", "core": cr,
+                    "producer": {"impl": "x", "artifact_digest": None,
+                                 "spec": "0.4", "report_digest": "f" * 64,
+                                 "local_notes": []}}, cs
+
+    snJ, recJ, casJ = _check_resolves_to(".warrants/README")   # digest is `other`
+    resJ, fJ = project(snJ, recJ, casJ)
+    sm.check_true("check resolving only to a non-blob source -> refusal",
+                  lambda: resJ is None
+                  and any(x["code"] == "CHECK_BLOB_ABSENT" for x in fJ))
+
+    for mode, label in [("err", "an ERR-judged blob"),
+                        ("unloaded", "a blob that was never loaded")]:
+        snK, recK, casK = _check_resolves_to(".warrants/blobs/p", break_blob=mode)
+        resK, fK = project(snK, recK, casK)
+        sm.check_true("check resolving to %s -> refusal" % label,
+                      lambda resK=resK, fK=fK: resK is None
+                      and any(x["code"] == "CHECK_BLOB_ABSENT" for x in fK))
 
     # re-gate P2-1: the empty-corpus guard needs its own negative control
     code_guard = (
