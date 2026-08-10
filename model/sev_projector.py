@@ -424,8 +424,93 @@ def project(snapshot, receipt, cas) -> tuple:
 
 # ------------------------------------------------------------------ fixture
 
+UPSTREAM_ACCEPT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "..", "conformance", "upstream",
+                               "warrant-accept.warrant.json")
+UPSTREAM_DIGEST = "bcd9765d73705a27f9273cf5e2fd2bd48ac5b1a1c02fc1e0958ede9dbdd4a88a"
+
+
 def fixture(extra_files=None, misfiled_as=None):
-    """An id-sound, ERR-free end-to-end triple (snapshot, receipt, cas).
+    """An end-to-end triple (snapshot, receipt, cas) built on a **vendored
+    upstream Warrant record** whose signature that protocol vouches for.
+
+    The synthetic records this fixture used before were reported
+    `valid: false` by their own receipts — so every positive projection path
+    rested on a record its own receipt called unsigned. SEV still performs no
+    cryptography: it consumes the upstream bytes as an external fixture
+    (`conformance/upstream/README.md` records provenance and digest).
+    """
+    with open(UPSTREAM_ACCEPT, "rb") as fh:
+        record_bytes = fh.read()
+    if sm.sha256_hex(record_bytes) != UPSTREAM_DIGEST:
+        raise AssertionError("vendored upstream fixture digest changed")
+    record, _pf = sm.parse_strict(record_bytes)
+    body = record["body"]
+    wid = sm.sha256_hex(sm.jcs(body))
+    filed_as = misfiled_as or wid
+    files = {".warrants/records/%s.json" % filed_as: record_bytes,
+             ".warrants/blobs/p": b"policy"}
+    files.update(extra_files or {})
+    cas = {sm.sha256_hex(v): v for v in files.values()}
+    uni = sm.seal_universe(files)
+    contract = {"name": "warrant", "version": "0.4",
+                "spec_digest": sm.sha256_hex(b"spec")}
+    d = sm.subroot_descriptor("warrant", contract, ".warrants/", uni)
+    snap = sm.snapshot_object([d], [])
+    by_path = {e["path"]: e["sha256"] for e in uni}
+    rec_path = ".warrants/records/%s.json" % filed_as
+    entries = sm.envelope_signature_entries(record)[0]
+    sources = sorted([
+        {"kind": "blob", "path": ".warrants/blobs/p",
+         "entry_digest": by_path[".warrants/blobs/p"], "loaded": True,
+         "issues": []},
+        {"kind": "record", "path": rec_path, "entry_digest": by_path[rec_path],
+         "loaded": True, "claimed_wid": filed_as if sm.HEX64.match(filed_as) else None,
+         "computed_wid": wid, "id_sound": filed_as == wid, "settlement": [],
+         "signatures": [{"sig_digest": dg, "multiplicity": m, "actor": a,
+                         "key": k, "valid": True, "binding": "unverified"}
+                        for dg, m, a, k in entries],
+         "issues": ([] if filed_as == wid else
+                    [{"code": "ID_UNSOUND", "severity": "ERR",
+                      "at": {"kind": "path", "value": rec_path}}]),
+         "reasons": [{"ptr": "/because/0", "kind": "check", "runtime": "cmd@v1",
+                      "reason_digest": sm.sha256_hex(sm.jcs(body["because"][0])),
+                      "outcome": {"re_execution": "not-applicable",
+                                  "claimed_verdict": body["because"][0]["verdict"],
+                                  "observed_verdict": None,
+                                  "observed_result": None, "atp_spent": None,
+                                  "failure_code": None}}]},
+    ] + [{"kind": sm.classify_warrant_source(pth, ".warrants/")[0], "path": pth,
+          "entry_digest": by_path[pth], "loaded": True, "issues": []}
+         for pth in sorted(extra_files or {})],
+        key=lambda x: (sm.path_sort_key(x["path"]), x["entry_digest"]))
+    core = {"subroot_descriptor_digest": sm.subroot_descriptor_digest(d),
+            "grade": "base", "trust_config_digest": None,
+            "execution_policy": {"runtimes": []},
+            "ok": filed_as == wid, "errors": 0 if filed_as == wid else 1,
+            "warnings": 0, "global_issues": [], "sources": sources}
+    receipt = {"receipt": "warrant.verification-receipt@v0", "core": core,
+               "producer": {"impl": "sev-fixture", "artifact_digest": None,
+                            "spec": "0.4", "report_digest": "f" * 64,
+                            "local_notes": []}}
+    return snap, receipt, cas
+
+
+def _mutate(receipt, fn):
+    r = json.loads(json.dumps(receipt))
+    fn(r)
+    return r
+
+
+def ski_fixture(extra_files=None, misfiled_as=None):
+    """A SYNTHETIC ski@v1 triple, for vectors that need a projected check run.
+
+    Its signature is a placeholder, and the receipt reports `valid: true` —
+    a **producer claim SEV cannot verify**. The internal-consistency rule is
+    one-way by design (a receipt may not contradict its own negative claims;
+    a positive claim buys it nothing), so this is contract-legal. The
+    flagship positive path uses the vendored upstream record instead, whose
+    signature the owning protocol vouches for.
 
     `extra_files` adds further universe members (paths under the prefix); the
     receipt reports each with the kind the store layout implies.
@@ -465,11 +550,10 @@ def fixture(extra_files=None, misfiled_as=None):
          "loaded": True, "claimed_wid": filed_as, "computed_wid": wid,
          "id_sound": filed_as == wid, "settlement": [],
          "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
-                         "key": k, "valid": False, "binding": "unverified"}
+                         "key": k, "valid": True, "binding": "unverified"}
                         for d, m, a, k in sm.envelope_signature_entries(record)[0]],
          "issues": sorted(
-             sm.signature_issues(sm.envelope_signature_entries(record)[0])
-             + ([] if filed_as == wid else
+             ([] if filed_as == wid else
                 [{"code": "ID_UNSOUND", "severity": "ERR",
                   "at": {"kind": "path", "value": rec_path}}]),
              key=lambda x: sm.jcs(x)),
@@ -491,8 +575,7 @@ def fixture(extra_files=None, misfiled_as=None):
                  "semantics_digest": sm.sha256_hex(b"book1"),
                  "budget_unit": "atp", "ceiling": 1000}]},
             "ok": filed_as == wid, "errors": 0 if filed_as == wid else 1,
-            "warnings": len(sm.envelope_signature_entries(record)[0]),
-            "global_issues": [], "sources": sources}
+            "warnings": 0, "global_issues": [], "sources": sources}
     receipt = {"receipt": "warrant.verification-receipt@v0", "core": core,
                "producer": {"impl": "sev-fixture", "artifact_digest": None,
                             "spec": "0.4", "report_digest": "f" * 64,
@@ -502,8 +585,9 @@ def fixture(extra_files=None, misfiled_as=None):
 
 # ------------------------------------------------------------------ vectors
 
+
 def run_vectors():
-    snap, receipt, cas = fixture()
+    snap, receipt, cas = ski_fixture()
 
     result, f = project(snap, receipt, cas)
     sm.check_equal("fixture projects with no findings", f, [])
@@ -529,7 +613,7 @@ def run_vectors():
 
     # cross-process determinism: a fresh interpreter must emit the same bytes
     code = ("import sev_projector as p, snapshot_model as m, sys, hashlib\n"
-            "s, r, c = p.fixture()\n"
+            "s, r, c = p.ski_fixture()\n"
             "res, f = p.project(s, r, c)\n"
             "sys.stdout.write(res['view_manifest']['graph_digest'])\n")
     proc = subprocess.run([sys.executable, "-c", code],
@@ -557,7 +641,7 @@ def run_vectors():
                   and any(x["code"] == "SOURCE_MISSING_FOR_MEMBER" for x in f_bad))
 
     # mutation moves the graph digest
-    snap2, receipt2, cas2 = fixture()
+    snap2, receipt2, cas2 = ski_fixture()
     receipt2["core"]["sources"][1]["reasons"][0]["outcome"]["atp_spent"] = 8
     res2, f2 = project(snap2, receipt2, cas2)
     sm.check_true("outcome mutation -> different graph digest",
@@ -569,7 +653,7 @@ def run_vectors():
     d_b = sm.subroot_descriptor("bos", {"name": "bos", "version": "0.4",
                                         "spec_digest": None}, ".b/",
                                 sm.seal_universe(files_b))
-    snap3, receipt3, cas3 = fixture()
+    snap3, receipt3, cas3 = ski_fixture()
     wrapped = [{k: v for k, v in w.items() if k != "digest"}
                for w in snap3["subroots"]]
     snap3b = sm.snapshot_object(wrapped + [d_b], [])
@@ -593,7 +677,7 @@ def run_vectors():
     # An honest id-unsound record: filed under one WarrantID, body hashes to
     # another. Both halves are now derived (filename claim + body re-hash),
     # so this is the only shape that can be id-unsound without lying.
-    snap4, receipt4, cas4 = fixture(misfiled_as="b" * 64)
+    snap4, receipt4, cas4 = ski_fixture(misfiled_as="b" * 64)
     res4, f4 = project(snap4, receipt4, cas4)
     sm.check_equal("negative receipt still projects (an honest ERR is evidence)",
                    f4, [])
@@ -632,7 +716,7 @@ def run_vectors():
             {"code": "ID_UNSOUND", "severity": "ERR", "at": dict(at, occurrence=1)}],
             key=lambda x: sm.jcs(x))
         r["core"].update(ok=False, errors=r["core"]["errors"] + 2)
-    snap5, receipt5, cas5 = fixture(misfiled_as="b" * 64)
+    snap5, receipt5, cas5 = ski_fixture(misfiled_as="b" * 64)
     _two_occurrences(receipt5)
     res5, f5 = project(snap5, receipt5, cas5)
     sm.check_true("two same-code issues at distinct occurrences both survive",
@@ -645,7 +729,7 @@ def run_vectors():
     sm.check_true("blob/genesis/other emit a source entity",
                   lambda: b"sourceKind" in nq)
     # a genuine "other" member (not a relabelling — the classifier derives it)
-    snap6, receipt6, cas6 = fixture(extra_files={".warrants/README": b"hi"})
+    snap6, receipt6, cas6 = ski_fixture(extra_files={".warrants/README": b"hi"})
     res6, f6 = project(snap6, receipt6, cas6)
     vm6 = res6["view_manifest"]
     other_digest = sm.sha256_hex(b"hi")
@@ -698,7 +782,7 @@ def run_vectors():
                   and any(x["code"] == "RUNTIME_NOT_DECLARED" for x in f7))
 
     # re-gate P1-2: emitted evidence must detach from its input
-    snap8, receipt8, cas8 = fixture(misfiled_as="b" * 64)
+    snap8, receipt8, cas8 = ski_fixture(misfiled_as="b" * 64)
     res8, _f8 = project(snap8, receipt8, cas8)
     before = json.dumps(res8["view_manifest"], sort_keys=True)
     receipt8["core"]["sources"][1]["issues"][0]["code"] = "MUTATED_AFTER_EMISSION"
@@ -729,7 +813,7 @@ def run_vectors():
                "actor": {"id": "x"}, "prior": [], "ts": 2}   # ts 1 -> 2
     rec_v2 = {"body": body_v2,
               "sigs": [{"actor": "x", "key": "c" * 64, "sig": "d" * 128}]}
-    snapA, receiptA, casA = fixture()
+    snapA, receiptA, casA = ski_fixture()
     old_src = receiptA["core"]["sources"][1]
     old_path, old_wid = old_src["path"], old_src["computed_wid"]
     filesA = {old_path: sm.jcs(rec_v2), ".warrants/blobs/p": b"policy"}
@@ -752,7 +836,7 @@ def run_vectors():
                   and any(x["code"] == "COMPUTED_WID_MISMATCH" for x in fA))
 
     # re-gate P1-2: two paths, identical bytes -> two source occurrences
-    snapB, receiptB, casB = fixture(
+    snapB, receiptB, casB = ski_fixture(
         extra_files={".warrants/genesis.json": b"policy"})   # same bytes as blobs/p
     resB, fB = project(snapB, receiptB, casB)
     sm.check_equal("identical-byte sources both validate", fB, [])
@@ -800,9 +884,9 @@ def run_vectors():
              "claimed_wid": w, "computed_wid": w, "id_sound": True,
              "settlement": [],
              "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
-                             "key": k, "valid": False, "binding": "unverified"}
+                             "key": k, "valid": True, "binding": "unverified"}
                             for d, m, a, k in sm.envelope_signature_entries(recd)[0]],
-             "issues": sm.signature_issues(sm.envelope_signature_entries(recd)[0]),
+             "issues": [],
              "reasons": [{"ptr": "/because/0", "kind": rob["kind"],
                           "runtime": rob.get("runtime", runtime),
                           "reason_digest": sm.sha256_hex(sm.jcs(rob)),
@@ -819,7 +903,7 @@ def run_vectors():
                    "semantics_digest": sm.sha256_hex(b"book1"),
                    "budget_unit": "atp", "ceiling": 1000}]},
               "ok": True, "errors": 0,
-              "warnings": len(sm.envelope_signature_entries(recd)[0]),
+              "warnings": 0,
               "global_issues": [], "sources": srcs}
         return sn, {"receipt": "warrant.verification-receipt@v0", "core": cr,
                     "producer": {"impl": "x", "artifact_digest": None,
@@ -846,7 +930,7 @@ def run_vectors():
     sm.check_true("CheckRun emits semanticsDigest, prov:used and a pointer",
                   lambda: b"semanticsDigest" in nq and b"prov#used" in nq
                   and b"sev#pointer" in nq and b"wrt:reason:" in nq)
-    snapC, receiptC, casC = fixture()
+    snapC, receiptC, casC = ski_fixture()
     receiptC["core"]["execution_policy"]["runtimes"][0]["semantics_digest"] = \
         sm.sha256_hex(b"book1-B")
     resC, fC = project(snapC, receiptC, casC)
@@ -864,7 +948,7 @@ def run_vectors():
                    reasons_a, reasons_b)
 
     # re-gate P2: source occurrence scoped to the subroot descriptor
-    snapD, receiptD, casD = fixture()
+    snapD, receiptD, casD = ski_fixture()
     dD = sm.subroot_descriptor(
         "warrant", {"name": "warrant", "version": "0.4",
                     "spec_digest": sm.sha256_hex(b"OTHER-SPEC")},
@@ -884,7 +968,7 @@ def run_vectors():
                   lambda: b"sev#inSubroot" in resD["nquads"])
 
     # re-gate P1-1: a forged source sharing a path with the real one
-    snapE, receiptE, casE = fixture()
+    snapE, receiptE, casE = ski_fixture()
     real = receiptE["core"]["sources"][0]
     forged = dict(real, entry_digest="0" * 64)
     receiptE["core"]["sources"] = sorted(
@@ -897,7 +981,7 @@ def run_vectors():
                   and any(x["code"] == "SOURCE_DIGEST_MISMATCH" for x in fE))
 
     # re-gate P1-2: one runtime, two semantics
-    snapF, receiptF, casF = fixture()
+    snapF, receiptF, casF = ski_fixture()
     rts = receiptF["core"]["execution_policy"]["runtimes"]
     rts.append(dict(rts[0], semantics_digest="f" * 64))
     resF, fF = project(snapF, receiptF, casF)
@@ -906,7 +990,7 @@ def run_vectors():
                   and any(x["code"] == "DUPLICATE_RUNTIME" for x in fF))
 
     # re-gate P1-3: matched over a check blob absent from this subroot
-    snapG, receiptG, casG = fixture()
+    snapG, receiptG, casG = ski_fixture()
     # rebuild the record so its committed check names a blob nobody sealed
     ghost = {"kind": "check", "runtime": "ski@v1", "check": "a" * 64,
              "verdict": "pass", "transcript": "b" * 64}
@@ -937,9 +1021,9 @@ def run_vectors():
              "loaded": True, "claimed_wid": widG, "computed_wid": widG,
              "id_sound": True, "settlement": [],
              "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
-                             "key": k, "valid": False, "binding": "unverified"}
+                             "key": k, "valid": True, "binding": "unverified"}
                             for d, m, a, k in sm.envelope_signature_entries(recG)[0]],
-             "issues": sm.signature_issues(sm.envelope_signature_entries(recG)[0]),
+             "issues": [],
              "reasons": [{"ptr": "/because/0", "kind": "check",
                           "runtime": "ski@v1",
                           "reason_digest": sm.sha256_hex(sm.jcs(ghost)),
@@ -993,7 +1077,7 @@ def run_vectors():
                 raise KeyError("store revoked at the verdict boundary")
             return super().__getitem__(k)
 
-    snapH, receiptH, casH = fixture()
+    snapH, receiptH, casH = ski_fixture()
     revoked = RevokedAfterVerdict(casH)
     real_validate = sm.validate_warrant_receipt
 
@@ -1015,9 +1099,9 @@ def run_vectors():
     # re-gate P1-1: the caller's objects are mutated exactly at the verdict
     # boundary. Only a private frozen view can survive this; a projector
     # reading receipt["core"] or snapshot again picks the poison up.
-    snapI, receiptI, casI = fixture()
+    snapI, receiptI, casI = ski_fixture()
     clean, _ = project(snapI, receiptI, casI)
-    snapJ, receiptJ, casJ = fixture()
+    snapJ, receiptJ, casJ = ski_fixture()
     real_validate2 = sm.validate_warrant_receipt
 
     def _poison_after(*a, **kw):
@@ -1083,9 +1167,9 @@ def run_vectors():
              "claimed_wid": w, "computed_wid": w, "id_sound": True,
              "settlement": [],
              "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
-                             "key": k, "valid": False, "binding": "unverified"}
+                             "key": k, "valid": True, "binding": "unverified"}
                             for d, m, a, k in sm.envelope_signature_entries(recd)[0]],
-             "issues": sm.signature_issues(sm.envelope_signature_entries(recd)[0]),
+             "issues": [],
              "reasons": [{"ptr": "/because/0", "kind": "check", "runtime": "ski@v1",
                           "reason_digest": sm.sha256_hex(sm.jcs(rob)),
                           "outcome": {"re_execution": "matched",
@@ -1102,7 +1186,7 @@ def run_vectors():
                    "semantics_digest": sm.sha256_hex(b"book1"),
                    "budget_unit": "atp", "ceiling": 1000}]},
               "ok": errs == 0, "errors": errs,
-              "warnings": len(sm.envelope_signature_entries(recd)[0]),
+              "warnings": 0,
               "global_issues": [], "sources": srcs}
         return sn, {"receipt": "warrant.verification-receipt@v0", "core": cr,
                     "producer": {"impl": "x", "artifact_digest": None,
@@ -1128,7 +1212,7 @@ def run_vectors():
     # facts reads as "present, with reservations".
     # the fixture's record carries a real envelope signature, faithfully
     # reported by the receipt — and the graph still says nothing about it
-    snapL, receiptL, casL = fixture()
+    snapL, receiptL, casL = ski_fixture()
     actor = receiptL["core"]["sources"][1]["signatures"][0]["actor"]
     resL, fL = project(snapL, receiptL, casL)
     codesL = [e["code"] for e in resL["loss_manifest"]["entries"]]
@@ -1142,7 +1226,7 @@ def run_vectors():
                   lambda: "L-NOSETTLE" not in codesL
                   and "L-NOUNCLAIMED" not in codesL)   # this fixture has neither
     # ...but a snapshot that DOES pin unclaimed bytes must declare them
-    snapU, receiptU, casU = fixture()
+    snapU, receiptU, casU = ski_fixture()
     dU = {k: v for k, v in snapU["subroots"][0].items() if k != "digest"}
     note = b"loose note"
     snapU2 = sm.snapshot_object([dU], [{"path": "notes.txt",
@@ -1159,7 +1243,7 @@ def run_vectors():
                   and "record" in cov["emitted"])
 
     # absent semantics must not stringify into the run's hash material
-    snapM, receiptM, casM = fixture()
+    snapM, receiptM, casM = ski_fixture()
     srcM = receiptM["core"]["sources"][1]
     srcM["reasons"][0]["outcome"].update(
         re_execution="unverified", observed_verdict=None, observed_result=None,
@@ -1186,7 +1270,7 @@ def run_vectors():
         def __deepcopy__(self, memo):
             raise RuntimeError("refuses to be copied")
 
-    snapN, receiptN, casN = fixture()
+    snapN, receiptN, casN = ski_fixture()
     hostile = Uncopyable(receiptN)
     real_validate3 = sm.validate_warrant_receipt
 
@@ -1212,7 +1296,7 @@ def run_vectors():
     # behaviour, so they are refused even when they copy cleanly
     class PlainSubclass(dict):
         pass
-    snapO, receiptO, casO = fixture()
+    snapO, receiptO, casO = ski_fixture()
     resO, fO = project(snapO, PlainSubclass(receiptO), casO)
     sm.check_equal("a dict subclass is refused too",
                    [x["code"] for x in fO], ["INPUT_NOT_FREEZABLE"])
@@ -1221,7 +1305,7 @@ def run_vectors():
 
     # re-gate: cyclic / over-deep plain containers must REFUSE, not crash.
     # These are exact dict/list values, so the type check alone lets them in.
-    snapP, receiptP, casP = fixture()
+    snapP, receiptP, casP = ski_fixture()
     cyc_dict = json.loads(json.dumps(receiptP))
     cyc_dict["core"]["self"] = cyc_dict           # dict cycle
     cyc_list_receipt = json.loads(json.dumps(receiptP))
@@ -1306,7 +1390,7 @@ def run_vectors():
     sm.check_true("the losses that DO apply are still stated",
                   lambda: {"L-CANON", "L-COMPLETE"} <= set(codesB))
     # ...while the full fixture, which does hold those facts, still declares them
-    fullres, _ = project(*fixture())
+    fullres, _ = project(*ski_fixture())
     codesFull = [e["code"] for e in fullres["loss_manifest"]["entries"]]
     sm.check_true("a record-bearing dataset still declares L-NOMAP and L-REEXEC",
                   lambda: {"L-NOMAP", "L-REEXEC"} <= set(codesFull))
@@ -1314,7 +1398,7 @@ def run_vectors():
     # re-gate: nested entries must be BOUND to the committed envelope, or a
     # clean receipt can hide and invent evidence at will
     def _tamper(fn):
-        sn, rc, cs = fixture()
+        sn, rc, cs = ski_fixture()
         fn(rc["core"]["sources"][1])
         return project(sn, rc, cs)
 
@@ -1388,8 +1472,7 @@ def run_vectors():
                   "semantics_digest": sm.sha256_hex(b"book1"),
                   "budget_unit": "atp", "ceiling": 1000}]},
              "ok": True, "errors": 0,
-             "warnings": len(sm.envelope_signature_entries(recP)[0]),
-             "global_issues": [],
+             "warnings": 0, "global_issues": [],
              "sources": sorted([
                  {"kind": "blob", "path": ".warrants/blobs/p",
                   "entry_digest": bpP[".warrants/blobs/p"], "loaded": True,
@@ -1398,12 +1481,11 @@ def run_vectors():
                   "loaded": True, "claimed_wid": widP, "computed_wid": widP,
                   "id_sound": True, "settlement": [],
                   "signatures": [{"sig_digest": d, "multiplicity": m,
-                                  "actor": a, "key": k, "valid": False,
+                                  "actor": a, "key": k, "valid": True,
                                   "binding": "unverified"}
                                  for d, m, a, k in
                                  sm.envelope_signature_entries(recP)[0]],
-                  "issues": sm.signature_issues(
-                      sm.envelope_signature_entries(recP)[0]),
+                  "issues": [],
                   "reasons": [{"ptr": "/because/1", "kind": "check",
                                "runtime": "ski@v1",
                                "reason_digest": sm.sha256_hex(sm.jcs(check_obj)),
@@ -1470,9 +1552,9 @@ def run_vectors():
              "claimed_wid": w, "computed_wid": w, "id_sound": True,
              "settlement": [],
              "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
-                             "key": k, "valid": False, "binding": "unverified"}
+                             "key": k, "valid": True, "binding": "unverified"}
                             for d, m, a, k in entries],
-             "issues": sm.signature_issues(entries), "reasons": reasons}],
+             "issues": [], "reasons": reasons}],
             key=lambda s: (sm.path_sort_key(s["path"]), s["entry_digest"]))
         cr = {"subroot_descriptor_digest": sm.subroot_descriptor_digest(dd),
               "grade": "base", "trust_config_digest": None,
@@ -1480,7 +1562,7 @@ def run_vectors():
                   {"runtime": "ski@v1", "semantics": "sigma-book-i@v0.5",
                    "semantics_digest": sm.sha256_hex(b"book1"),
                    "budget_unit": "atp", "ceiling": 1000}]},
-              "ok": True, "errors": 0, "warnings": len(entries),
+              "ok": True, "errors": 0, "warnings": 0,
               "global_issues": [],
               "sources": srcs}
         return sn, {"receipt": "warrant.verification-receipt@v0", "core": cr,
@@ -1529,9 +1611,15 @@ def run_vectors():
                     errors=None, warnings=None):
         sn, rc, cs = _with_committed(sigs=sigs, because=because)
         rec_src = [x for x in rc["core"]["sources"] if x["kind"] == "record"][0]
-        rec_src["issues"] = [{"code": code, "severity": severity,
-                              "at": {"kind": "json-pointer", "value": ptr}}]
-        errs = 1 if severity == "ERR" else 0
+        entries_here = [x for x in rec_src["signatures"]]
+        extra = ([] if entries_here else
+                 [{"code": "NO_VALID_ACTOR_SIGNATURE", "severity": "ERR",
+                   "at": {"kind": "path", "value": rec_src["path"]}}])
+        rec_src["issues"] = sorted(
+            [{"code": code, "severity": severity,
+              "at": {"kind": "json-pointer", "value": ptr}}] + extra,
+            key=lambda x: sm.jcs(x))
+        errs = (1 if severity == "ERR" else 0) + len(extra)
         rc["core"].update(ok=errs == 0, errors=errs,
                           warnings=1 if severity == "WARN" else 0)
         return project(sn, rc, cs)
@@ -1587,6 +1675,77 @@ def run_vectors():
     sm.check_equal("malformed extra signature as ERR is accepted", fX3, [])
     sm.check_true("...and the record is excluded",
                   lambda: resX2["view_manifest"]["sources_excluded"] == 1)
+
+    # provenance of the vendored fixture is mechanically checked: the bytes,
+    # the constant and the digest recorded in the README must agree. No
+    # behavioural vector can do this — the model recomputes everything from
+    # whatever bytes it is given, so edited bytes stay self-consistent.
+    with open(UPSTREAM_ACCEPT, "rb") as _fh:
+        _vendored = _fh.read()
+    sm.check_equal("vendored upstream bytes match the pinned digest",
+                   sm.sha256_hex(_vendored), UPSTREAM_DIGEST)
+    with open(os.path.join(os.path.dirname(UPSTREAM_ACCEPT), "README.md")) as _fh:
+        sm.check_true("...and the digest recorded in its provenance note",
+                      lambda: UPSTREAM_DIGEST in _fh.read())
+
+    # re-gate: a receipt may not contradict its own NEGATIVE claims. This
+    # needs no cryptography — the contradiction is entirely inside the
+    # producer-asserted core.
+    def _sig_state(fn):
+        sn, rc, cs = ski_fixture()
+        src = [x for x in rc["core"]["sources"] if x["kind"] == "record"][0]
+        fn(src, rc["core"])
+        return project(sn, rc, cs)
+
+    resA1, fA1 = _sig_state(lambda src, core: (
+        src["signatures"][0].update(valid=False),
+        src.__setitem__("issues", [{"code": "INVALID_SIGNATURE",
+                                    "severity": "WARN",
+                                    "at": {"kind": "json-pointer",
+                                           "value": "/sigs/0"}}]),
+        core.update(warnings=1)))
+    sm.check_true("only actor signature reported invalid, WARN only -> refusal",
+                  lambda: resA1 is None and any(
+                      x["code"] == "NO_VALID_ACTOR_SIGNATURE_UNREPORTED"
+                      for x in fA1))
+
+    resA2, fA2 = _sig_state(lambda src, core: (
+        src["signatures"][0].update(valid=False),
+        src.__setitem__("issues", sorted([
+            {"code": "INVALID_SIGNATURE", "severity": "WARN",
+             "at": {"kind": "json-pointer", "value": "/sigs/0"}},
+            {"code": "NO_VALID_ACTOR_SIGNATURE", "severity": "ERR",
+             "at": {"kind": "path", "value": src["path"]}}],
+            key=lambda x: sm.jcs(x))),
+        core.update(ok=False, errors=1, warnings=1)))
+    sm.check_equal("...reported as ERR, it is accepted", fA2, [])
+    sm.check_true("...and the record is excluded",
+                  lambda: resA2["view_manifest"]["sources_excluded"] == 1)
+
+    resA3, fA3 = _sig_state(lambda src, core: (
+        src["signatures"][0].update(actor="someone@else"),))
+    sm.check_true("a valid signature by another actor is not the actor's",
+                  lambda: resA3 is None and any(
+                      x["code"] in ("SIGNATURE_FIELD_MISMATCH",
+                                    "NO_VALID_ACTOR_SIGNATURE_UNREPORTED")
+                      for x in fA3))
+
+    # zero signatures at all: the envelope bijection catches the omission,
+    # and the aggregate rule catches the state
+    resA4, fA4 = _sig_state(lambda src, core: (src.__setitem__("signatures", []),))
+    sm.check_true("zero reported signatures -> refusal",
+                  lambda: resA4 is None and any(
+                      x["code"] in ("SIGNATURE_MISSING",
+                                    "NO_VALID_ACTOR_SIGNATURE_UNREPORTED")
+                      for x in fA4))
+
+    # the pinned upstream record: a signature the owning protocol vouches for
+    snU2, rcU2, csU2 = fixture()
+    resU2, fU2 = project(snU2, rcU2, csU2)
+    sm.check_equal("the vendored upstream record projects cleanly", fU2, [])
+    sm.check_true("...as a genuinely signed positive path",
+                  lambda: resU2["view_manifest"]["sources_excluded"] == 0
+                  and b"urn:wrt:record:" in resU2["nquads"])
 
     # re-gate P2-1: the empty-corpus guard needs its own negative control
     code_guard = (

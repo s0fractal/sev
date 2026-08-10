@@ -35,3 +35,4 @@ round without a SHA is invalid.
 | 6l | 2026-08-10 | Codex | AMEND | `2df4d0b` |
 | 6m | 2026-08-10 | Codex | AMEND | `84b6d06` |
 | 6n | 2026-08-10 | Codex | AMEND | `c96f72c` |
+| 6o | 2026-08-10 | Codex | AMEND | `854ff6f` |

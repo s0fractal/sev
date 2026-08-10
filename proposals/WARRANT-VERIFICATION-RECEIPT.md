@@ -6,7 +6,7 @@
 > a normative copy and instead pins the Warrant artifact/version/digest, and
 > this document remains here as provenance, marked superseded.
 
-**Status:** PROPOSAL SKETCH **rev 10** (2026-08-10), design-only, not filed.
+**Status:** PROPOSAL SKETCH **rev 11** (2026-08-10), design-only, not filed.
 Rev 5 (fifth Codex review, AMEND — compositional layer): the public verdict
 is now **`validate_warrant_receipt(snapshot, receipt, cas)`** in the model —
 descriptor lookup by digest, semantic role check (incl. non-null
@@ -204,6 +204,15 @@ JCS-canonical I-JSON per warrant SPEC §4; closed schemas; one type tag.
 - ▲ **`global_issues[]`** carries store- and settlement-level problems that
   belong to no single source file (invalid threshold policy, unverified
   genesis, missing jurisdiction root).
+- ▲ **A receipt may not contradict its own negative claims (rev 11).** If a
+  receipt reports **no** signature with `valid: true` whose `actor` equals
+  the committed `body.actor.id`, it MUST carry an ERR
+  `NO_VALID_ACTOR_SIGNATURE` and count it — warrant SPEC §5 makes a record
+  with no valid actor signature an error, and a receipt claiming
+  `ok: true, errors: 0` beside its own `valid: false` is self-contradictory.
+  The rule is deliberately **one-way**: it does not make `valid: true`
+  trustworthy (SEV verifies nothing), it only forbids the receipt from
+  disagreeing with itself. Finding: `NO_VALID_ACTOR_SIGNATURE_UNREPORTED`.
 - ▲ **No producer-asserted field may relax a rule applied to the same
   receipt (rev 10).** The severity matrix briefly let a malformed EXTRA
   co-signature be WARN when a valid signature by `body.actor.id` survived —

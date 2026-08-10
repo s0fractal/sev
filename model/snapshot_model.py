@@ -732,6 +732,25 @@ def validate_receipt_core(core, descriptor=None, cas=None, view=None) -> list:
                 _f(f, "BINDING_WITHOUT_VALIDITY", sat)
         _ordered(f, good_sigs, lambda s: (s["sig_digest"], s["multiplicity"]),
                  "SIGNATURES_NOT_SORTED", at + "/signatures")
+        # One-way internal-consistency rule, no cryptography involved: if the
+        # receipt itself reports no valid signature by the committed
+        # body.actor.id, it may not simultaneously report ok/errors as if the
+        # record were soundly signed. This does not make `valid: true`
+        # trustworthy — it only forbids a receipt from contradicting its own
+        # NEGATIVE claims (warrant SPEC §5 requires a valid actor signature).
+        body_obj = parsed.get("body") if isinstance(parsed, dict) else None
+        actor_id = (body_obj.get("actor", {}) or {}).get("id") \
+            if isinstance(body_obj, dict) and isinstance(body_obj.get("actor"), dict) \
+            else None
+        if parsed is not None:
+            has_valid_actor_sig = any(
+                s.get("valid") is True and s.get("actor") == actor_id
+                for s in good_sigs) and actor_id is not None
+            if not has_valid_actor_sig and not any(
+                    x["code"] == "NO_VALID_ACTOR_SIGNATURE"
+                    and x["severity"] == "ERR" for x in issues):
+                _f(f, "NO_VALID_ACTOR_SIGNATURE_UNREPORTED", at)
+
         invalid_count = sum(1 for s in good_sigs if s["valid"] is False)
         sig_issues = [x for x in issues if x["code"] == "INVALID_SIGNATURE"
                       and x["severity"] == "WARN"]
@@ -1424,6 +1443,8 @@ def _fixture():
                         for d, m, a, k in envelope_signature_entries(record)[0]],
          "issues": sorted(
              [{"code": "ID_UNSOUND", "severity": "ERR",
+               "at": {"kind": "path", "value": ".warrants/records/r.json"}},
+              {"code": "NO_VALID_ACTOR_SIGNATURE", "severity": "ERR",
                "at": {"kind": "path", "value": ".warrants/records/r.json"}}]
              + signature_issues(envelope_signature_entries(record)[0]),
              key=lambda x: jcs(x)),
@@ -1440,7 +1461,7 @@ def _fixture():
                 {"runtime": "ski@v1", "semantics": "sigma-book-i@v0.5",
                  "semantics_digest": sha256_hex(b"book1"), "budget_unit": "atp",
                  "ceiling": 1000}]},
-            "ok": False, "errors": 1,
+            "ok": False, "errors": 2,
             "warnings": len(envelope_signature_entries(record)[0]),
             "global_issues": [],
             "sources": sources}
