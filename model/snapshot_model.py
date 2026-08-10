@@ -1093,6 +1093,20 @@ def _bind_to_envelope(f, envelope, src, good_sigs, good_reasons, at, issues):
             "check_occurrences": len(expected_ptrs) + len(reason_malformed)}
 
 
+def _acknowledges(issues, code, path) -> bool:
+    """An acknowledgement is `(this source's path, code, ERR)`.
+
+    The locator is not decoration: an issue naming another member describes
+    that member, and letting it stand in for this one turns the exclusion
+    record into a false coordinate.
+    """
+    return any(x["code"] == code and x["severity"] == "ERR"
+               and isinstance(x.get("at"), dict)
+               and x["at"].get("kind") == "path"
+               and x["at"].get("value") == path
+               for x in issues)
+
+
 def _resolve_record(f, cas, src, at, issues):
     """Resolve and parse a record's committed bytes ONCE per source.
 
@@ -1147,10 +1161,13 @@ def _resolve_record(f, cas, src, at, issues):
     # (round 10). The shape is derived, then joined with acknowledgement
     # exactly like a parse failure.
     envelope_ok = parsed_ok and set(obj.keys()) == {"body", "sigs"}
-    acknowledged = any(x["code"] == "RECORD_UNREADABLE" and x["severity"] == "ERR"
-                       for x in issues)
-    envelope_acked = any(x["code"] == "MALFORMED_ENVELOPE" and x["severity"] == "ERR"
-                         for x in issues)
+    # One join for both branches, and it must match the LOCATOR too: keying
+    # on code+severity alone let an issue pointing at `.warrants/blobs/p`
+    # acknowledge a defect in a different record — the receipt validated,
+    # the projection emitted, and `exclusions[]` carried the wrong
+    # coordinate as evidence (round 11).
+    acknowledged = _acknowledges(issues, "RECORD_UNREADABLE", src["path"])
+    envelope_acked = _acknowledges(issues, "MALFORMED_ENVELOPE", src["path"])
     if parsed_ok and not envelope_ok:
         if not envelope_acked:
             _f(f, "MALFORMED_ENVELOPE_UNREPORTED", at)

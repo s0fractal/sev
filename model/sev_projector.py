@@ -2194,6 +2194,46 @@ def run_vectors():
                   lambda: resD is None and any(
                       x["code"] == "UNREADABLE_WITH_IDENTITY_CLAIM" for x in fD))
 
+    # ...and the severity is part of the join too: an acknowledgement that
+    # does not make the record fatal has not acknowledged anything
+    snW, rcW, csW = _envelope_record(extra={"attacker_extra": 1},
+                                     ack="MALFORMED_ENVELOPE")
+    recW = [x for x in rcW["core"]["sources"] if x["kind"] == "record"][0]
+    recW["issues"][0]["severity"] = "WARN"
+    rcW["core"].update(ok=True, errors=0, warnings=1)
+    resW, fW = project(snW, rcW, csW)
+    sm.check_true("a WARN-level acknowledgement does not acknowledge",
+                  lambda: resW is None and any(
+                      x["code"] == "MALFORMED_ENVELOPE_UNREPORTED" for x in fW))
+
+    # round 11: an acknowledgement must name THIS source, not merely carry
+    # the right code — an issue pointing elsewhere describes elsewhere
+    def _misdirected(builder, code, **kw):
+        sn, rc, cs = builder(ack=code, **kw)
+        rec = [x for x in rc["core"]["sources"] if x["kind"] == "record"][0]
+        # same code, same severity, but the locator names the blob member
+        rec["issues"][0]["at"] = {"kind": "path",
+                                  "value": ".warrants/blobs/p"}
+        return project(sn, rc, cs)
+
+    resM1, fM1 = _misdirected(_envelope_record, "MALFORMED_ENVELOPE",
+                              extra={"attacker_extra": 1})
+    sm.check_true("an envelope acknowledgement pointing at another member "
+                  "does not acknowledge this one",
+                  lambda: resM1 is None and any(
+                      x["code"] == "MALFORMED_ENVELOPE_UNREPORTED" for x in fM1))
+
+    def _unparse_misdirected():
+        sn, rc, cs = _unparseable(ack=True)
+        rec = [x for x in rc["core"]["sources"] if x["kind"] == "record"][0]
+        rec["issues"][0]["at"] = {"kind": "path", "value": ".warrants/blobs/p"}
+        return project(sn, rc, cs)
+
+    resM2, fM2 = _unparse_misdirected()
+    sm.check_true("...and neither does a misdirected RECORD_UNREADABLE",
+                  lambda: resM2 is None and any(
+                      x["code"] == "RECORD_UNREADABLE_UNREPORTED" for x in fM2))
+
     # the MVP must not drop a source on a producer-selected `loaded`
     snLoad, rcLoad, csLoad = ski_fixture()
     recsrc = [x for x in rcLoad["core"]["sources"] if x["kind"] == "record"][0]
