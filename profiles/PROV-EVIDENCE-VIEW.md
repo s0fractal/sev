@@ -415,9 +415,25 @@ reproduced countervector:
   `sev:sourceKind` and `sev:entryDigest`. Counting a member as projected
   while emitting nothing for it is the same silent-truncation class on the
   other branch of the union.
+- **A reason is not an execution of it.** `urn:wrt:reason:<sha256(wid ‖ ptr ‖
+  reason_digest)>` is a stable fact of the record; `urn:sigma:run:<sha256(
+  receipt_core_digest ‖ wid ‖ ptr ‖ reason_digest ‖ semantics_digest)>` is
+  one execution under one declared semantics, carrying
+  `sigma:semanticsDigest`, `sev:receiptCoreDigest` and `prov:used` (the
+  reason and the check blob). Keying the run on the reason alone fused two
+  executions under *different* semantics into one `prov:Activity` — a named
+  graph scopes a statement, it does not localize an IRI.
+- **A role matching the bytes is not a role that is allowed.** Only a
+  committed `kind:"check"` may become a `CheckRun`, and its runtime must be
+  in the closed registry for that **body version** (warrant SPEC §3:
+  `"0.1"` → `cmd@v1`; `"0.2"` → `cmd@v1 | ski@v1`; anything else invalidates
+  the record). `execution_policy` narrows what a verifier will run; it never
+  extends the registry.
 - **Occurrence identity is distinct from content identity.** A source node
-  is `urn:sev:source:<sha256(path ‖ 0x00 ‖ entry_digest)>` carrying
-  `sev:path`, `sev:sourceKind` and `sev:entryDigest`, and it
+  is `urn:sev:source:<sha256(subroot_descriptor_digest ‖ path ‖
+  entry_digest)>` carrying `sev:path`, `sev:sourceKind`, `sev:entryDigest`
+  and `sev:inSubroot` — scoped to the descriptor, because `sourceKind` is a
+  contract-derived assertion — and it
   `prov:specializationOf` the content entity (`urn:wrt:blob:<digest>`, or
   `urn:wrt:record:<wid>` for records). Keying source nodes on the digest
   alone merged two paths holding identical bytes into one node with two

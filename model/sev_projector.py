@@ -102,19 +102,37 @@ def iri_blob(digest):
     return "urn:wrt:blob:" + digest
 
 
-def iri_source(path, entry_digest):
-    """Source OCCURRENCE identity — the receipt's own `(path, entry_digest)`.
-    Two paths holding identical bytes are two sources; keying a node on the
-    digest alone merged them into one node with two `sourceKind` values,
-    losing path and multiplicity (re-gate P1-2)."""
+def iri_source(subroot_digest, path, entry_digest):
+    """Source OCCURRENCE identity — `(subroot, path, entry_digest)`.
+
+    Two paths holding identical bytes are two sources; keying on the digest
+    alone merged them into one node with two `sourceKind` values. And since
+    `sourceKind` is a *contract-derived* assertion, the occurrence is scoped
+    to the subroot descriptor that derived it — otherwise two snapshots with
+    different `contract.spec_digest` (hence different descriptor digests)
+    produce identical source IRIs, dissolving the domain separation the
+    descriptor exists to provide (re-gate P2)."""
     return "urn:sev:source:" + sm.sha256_hex(
-        path.encode("utf-8") + b"\x00" + entry_digest.encode("ascii"))
+        subroot_digest.encode("ascii") + b"\x00" + path.encode("utf-8")
+        + b"\x00" + entry_digest.encode("ascii"))
 
 
-def iri_run(wid, ptr, reason_digest):
-    material = (wid.encode() + b"\x00" + ptr.encode() + b"\x00"
-                + reason_digest.encode())
-    return "urn:sigma:run:" + sm.sha256_hex(material)
+def iri_reason(wid, ptr, reason_digest):
+    """The reason as a stable fact of the record: same across every
+    verification of the same bytes."""
+    return "urn:wrt:reason:" + sm.sha256_hex(
+        wid.encode() + b"\x00" + ptr.encode() + b"\x00" + reason_digest.encode())
+
+
+def iri_run(core_digest, wid, ptr, reason_digest, semantics_digest):
+    """One EXECUTION of that reason. Two receipts re-running the same reason
+    under different semantics are two runs; keying only on the reason made
+    them one prov:Activity once the datasets were merged, and a named graph
+    does not localize an IRI (re-gate P1-2)."""
+    return "urn:sigma:run:" + sm.sha256_hex(
+        core_digest.encode("ascii") + b"\x00" + wid.encode() + b"\x00"
+        + ptr.encode() + b"\x00" + reason_digest.encode() + b"\x00"
+        + str(semantics_digest).encode("ascii"))
 
 
 def iri_verify_graph(core_digest):
@@ -123,6 +141,30 @@ def iri_verify_graph(core_digest):
 
 def iri_receipt(core_digest):
     return "urn:sev:receipt:" + core_digest
+
+
+def _committed_reasons(cas, src):
+    """{ptr: committed reason object} from the record's committed bytes.
+
+    The receipt names the reason by digest; the check blob it used lives only
+    in those bytes, so `prov:used` and the pointer link can be emitted
+    faithfully instead of being dropped (re-gate P1-2)."""
+    out = {}
+    if cas is None:
+        return out
+    try:
+        raw = sm.cas_resolve(cas, src["entry_digest"])
+    except (KeyError, sm.SealViolation):
+        return out
+    obj, _f = sm.parse_strict(raw)
+    body = obj.get("body") if isinstance(obj, dict) else None
+    because = body.get("because") if isinstance(body, dict) else None
+    if not isinstance(because, list):
+        return out
+    for i, item in enumerate(because):
+        if isinstance(item, dict):
+            out["/because/%d" % i] = item
+    return out
 
 
 # ---------------------------------------------------------------- projection
@@ -159,6 +201,9 @@ def project(snapshot, receipt, cas) -> tuple:
 
     unverified = 0
     exclusions = []
+    subroot_digest = core["subroot_descriptor_digest"]
+    runtime_semantics = {r["runtime"]: r["semantics_digest"]
+                         for r in core["execution_policy"]["runtimes"]}
 
     def _exclude(src, projection_reason):
         """Exclusions carry the receipt's issues VERBATIM — the exact ordered
@@ -189,11 +234,12 @@ def project(snapshot, receipt, cas) -> tuple:
             # (path, entry_digest); the content entity keyed by digest alone
             # is linked, not conflated — two paths with identical bytes are
             # two occurrences of one content.
-            node = iri_source(src["path"], src["entry_digest"])
+            node = iri_source(subroot_digest, src["path"], src["entry_digest"])
             g.add(node, RDF_TYPE, _iri(SEV + "Source"))
             g.add(node, SEV + "path", _lit(src["path"]))
             g.add(node, SEV + "sourceKind", _lit(src["kind"]))
             g.add(node, SEV + "entryDigest", _lit(src["entry_digest"]))
+            g.add(node, SEV + "inSubroot", _lit(subroot_digest))
             content = iri_blob(src["entry_digest"])
             g.add(content, RDF_TYPE, _iri(PROV + "Entity"))
             g.add(node, PROV + "specializationOf", _iri(content))
@@ -203,7 +249,7 @@ def project(snapshot, receipt, cas) -> tuple:
             continue  # R4 rule: only id-sound, ERR-free records become nodes
         wid = src["computed_wid"]
         rec, filing = iri_record(wid), iri_filing(src["entry_digest"])
-        occ = iri_source(src["path"], src["entry_digest"])
+        occ = iri_source(subroot_digest, src["path"], src["entry_digest"])
         g.add(rec, RDF_TYPE, _iri(WRT + "Warrant"))
         g.add(rec, PROV + "wasGeneratedBy", _iri(filing))
         g.add(filing, RDF_TYPE, _iri(WRT + "Filing"))
@@ -214,20 +260,41 @@ def project(snapshot, receipt, cas) -> tuple:
         g.add(occ, SEV + "path", _lit(src["path"]))
         g.add(occ, SEV + "sourceKind", _lit("record"))
         g.add(occ, SEV + "entryDigest", _lit(src["entry_digest"]))
+        g.add(occ, SEV + "inSubroot", _lit(subroot_digest))
         g.add(occ, PROV + "specializationOf", _iri(rec))
+        committed = _committed_reasons(cas, src)
         for reason in src["reasons"]:
-            run = iri_run(wid, reason["ptr"], reason["reason_digest"])
             o = reason["outcome"]
+            rt = reason["runtime"]
+            sem = runtime_semantics.get(rt)
+            # the reason is a stable fact of the record; the run is one
+            # execution of it under one declared semantics
+            reason_node = iri_reason(wid, reason["ptr"], reason["reason_digest"])
+            g.add(reason_node, RDF_TYPE, _iri(WRT + "Reason"))
+            g.add(reason_node, SEV + "pointer", _lit(reason["ptr"]))
+            g.add(reason_node, SIGMA + "reasonDigest", _lit(reason["reason_digest"]))
+            g.add(reason_node, SIGMA + "runtime", _lit(rt))
+            g.add(reason_node, SIGMA + "claimedVerdict", _lit(o["claimed_verdict"]))
+            g.add(rec, WRT + "hasReason", _iri(reason_node))
+            check_blob = (committed.get(reason["ptr"]) or {}).get("check")
+            if check_blob:
+                g.add(reason_node, PROV + "used", _iri(iri_blob(check_blob)))
+
+            run = iri_run(core_digest, wid, reason["ptr"],
+                          reason["reason_digest"], sem)
             g.add(run, RDF_TYPE, _iri(SIGMA + "CheckRun"), vgraph)
-            g.add(run, SIGMA + "reasonDigest", _lit(reason["reason_digest"]), vgraph)
-            g.add(run, SIGMA + "runtime", _lit(reason["runtime"]), vgraph)
-            g.add(run, SIGMA + "claimedVerdict", _lit(o["claimed_verdict"]), vgraph)
+            g.add(run, PROV + "used", _iri(reason_node), vgraph)
+            if check_blob:
+                g.add(run, PROV + "used", _iri(iri_blob(check_blob)), vgraph)
+            if sem:
+                g.add(run, SIGMA + "semanticsDigest", _lit(sem), vgraph)
+            g.add(run, SEV + "receiptCoreDigest", _lit(core_digest), vgraph)
             g.add(run, SIGMA + "reExecution", _lit(o["re_execution"]), vgraph)
             g.add(run, PROV + "wasInformedBy", _iri(rec), vgraph)
             if o["re_execution"] in ("matched", "mismatched"):
                 g.add(run, SIGMA + "observedVerdict", _lit(o["observed_verdict"]), vgraph)
                 g.add(run, SIGMA + "atpSpent", _lit(o["atp_spent"]), vgraph)
-                if reason["runtime"] == "ski@v1":
+                if rt == "ski@v1":
                     g.add(run, PROV + "generated",
                           _iri("urn:sigma:node:" + o["observed_result"]), vgraph)
             if o["re_execution"] == "unverified":
@@ -613,6 +680,115 @@ def run_vectors():
                   lambda: sum(1 for ln in lines
                               if "specializationOf" in ln
                               and sm.sha256_hex(b"policy") in ln) == 2)
+
+    # re-gate P1-1: only a committed `check` under a registry runtime may be
+    # a CheckRun — matching the bytes is not the same as being allowed
+    def _committed_variant(kind, runtime, body_version="0.2", policy_rt=None):
+        rob = {"kind": kind, "runtime": runtime, "check": "a" * 64,
+               "verdict": "pass", "transcript": "b" * 64}
+        if kind == "prose":
+            rob = {"kind": "prose", "text": "because I say so"}
+        bod = {"warrant": body_version, "decision": "accept", "subject": {},
+               "under": [], "because": [rob], "evidence": [],
+               "actor": {"id": "x"}, "prior": [], "ts": 1}
+        recd = {"body": bod,
+                "sigs": [{"actor": "x", "key": "c" * 64, "sig": "d" * 128}]}
+        w = sm.sha256_hex(sm.jcs(bod))
+        fl = {".warrants/records/%s.json" % w: sm.jcs(recd),
+              ".warrants/blobs/p": b"policy"}
+        cs = {sm.sha256_hex(v): v for v in fl.values()}
+        un = sm.seal_universe(fl)
+        dd = sm.subroot_descriptor("warrant",
+                                   {"name": "warrant", "version": "0.4",
+                                    "spec_digest": sm.sha256_hex(b"spec")},
+                                   ".warrants/", un)
+        sn = sm.snapshot_object([dd], [])
+        bp = {e["path"]: e["sha256"] for e in un}
+        rp = ".warrants/records/%s.json" % w
+        srcs = sorted([
+            {"kind": "blob", "path": ".warrants/blobs/p",
+             "entry_digest": bp[".warrants/blobs/p"], "loaded": True, "issues": []},
+            {"kind": "record", "path": rp, "entry_digest": bp[rp], "loaded": True,
+             "claimed_wid": w, "computed_wid": w, "id_sound": True,
+             "settlement": [], "signatures": [], "issues": [],
+             "reasons": [{"ptr": "/because/0", "kind": rob["kind"],
+                          "runtime": rob.get("runtime", runtime),
+                          "reason_digest": sm.sha256_hex(sm.jcs(rob)),
+                          "outcome": {"re_execution": "matched",
+                                      "claimed_verdict": "pass",
+                                      "observed_verdict": "pass",
+                                      "observed_result": "e" * 64,
+                                      "atp_spent": 7, "failure_code": None}}]},
+        ], key=lambda s: (sm.path_sort_key(s["path"]), s["entry_digest"]))
+        cr = {"subroot_descriptor_digest": sm.subroot_descriptor_digest(dd),
+              "grade": "base", "trust_config_digest": None,
+              "execution_policy": {"runtimes": [
+                  {"runtime": policy_rt or runtime, "semantics": "s",
+                   "semantics_digest": sm.sha256_hex(b"book1"),
+                   "budget_unit": "atp", "ceiling": 1000}]},
+              "ok": True, "errors": 0, "warnings": 0, "global_issues": [],
+              "sources": srcs}
+        return sn, {"receipt": "warrant.verification-receipt@v0", "core": cr,
+                    "producer": {"impl": "x", "artifact_digest": None,
+                                 "spec": "0.4", "report_digest": "f" * 64,
+                                 "local_notes": []}}, cs
+
+    for kind, runtime, ver, code in [
+            # a committed prose reason carries no runtime at all, so it is
+            # caught one step earlier — the receipt cannot even name a runtime
+            # for it without contradicting the bytes
+            ("prose", "ski@v1", "0.2", "REASON_ROLE_MISMATCH"),
+            ("evil", "ski@v1", "0.2", "REASON_NOT_A_CHECK"),
+            ("check", "evil@v1", "0.2", "RUNTIME_NOT_IN_REGISTRY"),
+            ("check", "ski@v1", "0.1", "RUNTIME_NOT_IN_REGISTRY"),
+            ("check", "ski@v1", "9.9", "UNKNOWN_BODY_VERSION")]:
+        snX, recX, casX = _committed_variant(kind, runtime, ver)
+        resX, fX = project(snX, recX, casX)
+        sm.check_true("committed %s/%s in a %s body -> %s"
+                      % (kind, runtime, ver, code),
+                      lambda resX=resX, fX=fX, code=code:
+                      resX is None and any(x["code"] == code for x in fX))
+
+    # re-gate P1-2: CheckRun carries semantics and its execution input
+    sm.check_true("CheckRun emits semanticsDigest, prov:used and a pointer",
+                  lambda: b"semanticsDigest" in nq and b"prov#used" in nq
+                  and b"sev#pointer" in nq and b"wrt:reason:" in nq)
+    snapC, receiptC, casC = fixture()
+    receiptC["core"]["execution_policy"]["runtimes"][0]["semantics_digest"] = \
+        sm.sha256_hex(b"book1-B")
+    resC, fC = project(snapC, receiptC, casC)
+    runs_a = {ln.split(" ")[0] for ln in nq.decode().splitlines()
+              if "sigma#CheckRun" in ln}
+    runs_b = {ln.split(" ")[0] for ln in resC["nquads"].decode().splitlines()
+              if "sigma#CheckRun" in ln}
+    reasons_a = {ln.split(" ")[0] for ln in nq.decode().splitlines()
+                 if "wrt#Reason" in ln}
+    reasons_b = {ln.split(" ")[0] for ln in resC["nquads"].decode().splitlines()
+                 if "wrt#Reason" in ln}
+    sm.check_true("different semantics -> different CheckRun IRIs",
+                  lambda: fC == [] and runs_a and runs_b and runs_a != runs_b)
+    sm.check_equal("the reason itself is stable across semantics",
+                   reasons_a, reasons_b)
+
+    # re-gate P2: source occurrence scoped to the subroot descriptor
+    snapD, receiptD, casD = fixture()
+    dD = sm.subroot_descriptor(
+        "warrant", {"name": "warrant", "version": "0.4",
+                    "spec_digest": sm.sha256_hex(b"OTHER-SPEC")},
+        ".warrants/",
+        [{k: v for k, v in e.items()}
+         for e in snapD["subroots"][0]["universe"]])
+    snapD2 = sm.snapshot_object([dD], [])
+    receiptD["core"]["subroot_descriptor_digest"] = sm.subroot_descriptor_digest(dD)
+    resD, fD = project(snapD2, receiptD, casD)
+    srcs_a = {ln.split(" ")[0] for ln in nq.decode().splitlines()
+              if "sev#Source" in ln}
+    srcs_d = {ln.split(" ")[0] for ln in resD["nquads"].decode().splitlines()
+              if "sev#Source" in ln}
+    sm.check_true("same bytes under a different contract -> different source IRIs",
+                  lambda: fD == [] and srcs_a and srcs_d and srcs_a != srcs_d)
+    sm.check_true("sources declare their subroot",
+                  lambda: b"sev#inSubroot" in resD["nquads"])
 
     # re-gate P2-1: the empty-corpus guard needs its own negative control
     code_guard = (

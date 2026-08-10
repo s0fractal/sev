@@ -44,6 +44,11 @@ FAILURE_CODES = {"OVER_BUDGET", "MISSING_BLOB", "MALFORMED_CHECK",
                  "RUNTIME_UNAVAILABLE", "ORACLE_UNAVAILABLE"}
 VERDICTS = {"pass", "fail"}
 NORMATIVE_NOT_EXECUTED = {"cmd@v1"}  # warrant SPEC: verify does not re-run these
+# warrant SPEC §3: the runtime registry is closed and keyed by BODY version —
+# ski@v1 is available in "0.2" bodies and reserved (MUST reject) in "0.1";
+# any other value makes the record invalid. execution_policy may narrow
+# availability, never extend this registry.
+RUNTIME_REGISTRY = {"0.1": {"cmd@v1"}, "0.2": {"cmd@v1", "ski@v1"}}
 GLOBAL_SUBJECTS = {"settlement", "store", "trust", "genesis"}
 SNAPSHOT_KEYS = {"snapshot", "bundle_root", "subroots", "unclaimed", "closed"}
 WRAPPER_KEYS = {"subroot", "protocol", "contract", "prefix", "universe", "digest"}
@@ -849,8 +854,24 @@ def _resolve_reason(f, obj, reason, rat):
     if (committed.get("kind") != reason["kind"]
             or committed.get("runtime") != reason["runtime"]):
         _f(f, "REASON_ROLE_MISMATCH", rat)
+        return
     if committed.get("verdict") != reason["outcome"].get("claimed_verdict"):
         _f(f, "REASON_CLAIM_MISMATCH", rat)
+    # Matching the bytes is not the same as being NORMATIVELY ALLOWED to be a
+    # check: `kind` and `runtime` were only string-compared, so a committed
+    # prose reason — or a committed check under an attacker-named runtime the
+    # receipt also declared in execution_policy — became a sigma:CheckRun.
+    # warrant SPEC §3 closes both: only `check` reasons carry a runtime, and
+    # the runtime registry is keyed by BODY version.
+    if committed.get("kind") != "check":
+        _f(f, "REASON_NOT_A_CHECK", rat)
+        return
+    version = body.get("warrant") if isinstance(body, dict) else None
+    allowed = RUNTIME_REGISTRY.get(version)
+    if allowed is None:
+        _f(f, "UNKNOWN_BODY_VERSION", rat)
+    elif committed.get("runtime") not in allowed:
+        _f(f, "RUNTIME_NOT_IN_REGISTRY", rat)
 
 
 # ------------------------------------------------- composed public verdict
