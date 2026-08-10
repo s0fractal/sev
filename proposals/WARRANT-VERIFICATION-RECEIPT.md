@@ -6,7 +6,7 @@
 > a normative copy and instead pins the Warrant artifact/version/digest, and
 > this document remains here as provenance, marked superseded.
 
-**Status:** PROPOSAL SKETCH **rev 5** (2026-08-10), design-only, not filed.
+**Status:** PROPOSAL SKETCH **rev 7** (2026-08-10), design-only, not filed.
 Rev 5 (fifth Codex review, AMEND — compositional layer): the public verdict
 is now **`validate_warrant_receipt(snapshot, receipt, cas)`** in the model —
 descriptor lookup by digest, semantic role check (incl. non-null
@@ -204,6 +204,18 @@ JCS-canonical I-JSON per warrant SPEC §4; closed schemas; one type tag.
 - ▲ **`global_issues[]`** carries store- and settlement-level problems that
   belong to no single source file (invalid threshold policy, unverified
   genesis, missing jurisdiction root).
+- ▲ **Nested entries are bound to the envelope, not merely well-formed
+  (rev 7).** `signatures[]` MUST be an exact bijection with the committed
+  envelope's `sigs[]` — same `(sig_digest, multiplicity)` multiset, with
+  `actor`/`key` matching the committed bytes — and `reasons[]` MUST account
+  for exactly the committed `because` entries of `kind:"check"`, one each.
+  Findings: `SIGNATURE_MISSING`, `SIGNATURE_NOT_IN_ENVELOPE`,
+  `SIGNATURE_FIELD_MISMATCH`, `DUPLICATE_SIGNATURE_ENTRY`,
+  `REASON_MISSING`, `REASON_NOT_COMMITTED`, `DUPLICATE_REASON_POINTER`.
+  Without this, shape validation alone let a clean receipt **omit** an
+  envelope signature, **omit** a committed check reason, or **invent** a
+  bound signature — and any downstream "dataset-relative" statement would
+  then be relative only to what the receipt chose to disclose.
 - ▲ **Both WID halves are derived, not reported (rev 6).** `claimed_wid`
   comes from the filename under the store layout, and `computed_wid` MUST be
   re-derived by the consumer as `sha256(JCS(body))` from the committed bytes

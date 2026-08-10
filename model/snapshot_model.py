@@ -814,6 +814,15 @@ def validate_receipt_core(core, descriptor=None, cas=None, view=None) -> list:
         _ordered(f, good_reasons, lambda r: r["ptr"], "REASONS_NOT_SORTED",
                  at + "/reasons")
 
+        # Completeness against the committed bytes. Without it, "the receipt
+        # reports X" was the whole contract: a receipt could omit an
+        # envelope signature, omit a committed check reason, or invent a
+        # bound signature that exists nowhere — all with zero findings, and
+        # dataset-relative coverage would faithfully describe whatever the
+        # receipt chose to disclose.
+        if parsed is not None:
+            _bind_to_envelope(f, parsed, src, good_sigs, good_reasons, at)
+
     _ordered(f, good_sources, lambda s: (path_sort_key(s["path"]), s["entry_digest"]),
              "SOURCES_NOT_SORTED", "/core/sources")
 
@@ -826,6 +835,71 @@ def validate_receipt_core(core, descriptor=None, cas=None, view=None) -> list:
     if core["ok"] != (errs == 0):
         _f(f, "OK_UNBOUND", "/core/ok")
     return f
+
+
+def envelope_signature_entries(envelope) -> list:
+    """The signature multiset the committed envelope actually carries:
+    [(sig_digest, multiplicity, actor, key)] in envelope order. Multiplicity
+    disambiguates byte-identical duplicates, exactly as the receipt's own
+    identity rule does."""
+    out, seen = [], {}
+    sigs = envelope.get("sigs") if isinstance(envelope, dict) else None
+    if not isinstance(sigs, list):
+        return out
+    for entry in sigs:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            digest = sha256_hex(jcs({k: entry.get(k) for k in ("actor", "key", "sig")}))
+        except ValueError:
+            continue
+        mult = seen.get(digest, 0)
+        seen[digest] = mult + 1
+        out.append((digest, mult, entry.get("actor"), entry.get("key")))
+    return out
+
+
+def reportable_reason_pointers(envelope) -> set:
+    """Committed `because` entries a receipt MUST account for: every
+    `kind:"check"` reason. Prose carries no runtime and is not re-executed;
+    checks are, or are explicitly not-applicable, but never absent."""
+    body = envelope.get("body") if isinstance(envelope, dict) else None
+    because = body.get("because") if isinstance(body, dict) else None
+    if not isinstance(because, list):
+        return set()
+    return {"/because/%d" % i for i, item in enumerate(because)
+            if isinstance(item, dict) and item.get("kind") == "check"}
+
+
+def _bind_to_envelope(f, envelope, src, good_sigs, good_reasons, at):
+    expected_sigs = envelope_signature_entries(envelope)
+    expected_keyed = {(d, m): (a, k) for d, m, a, k in expected_sigs}
+    reported = {}
+    for s in good_sigs:
+        key = (s["sig_digest"], s["multiplicity"])
+        if key in reported:
+            _f(f, "DUPLICATE_SIGNATURE_ENTRY", at)
+        reported[key] = s
+    for key in sorted(set(expected_keyed) - set(reported)):
+        _f(f, "SIGNATURE_MISSING", "%s [%s:%d]" % (at, key[0], key[1]))
+    for key in sorted(set(reported) - set(expected_keyed)):
+        _f(f, "SIGNATURE_NOT_IN_ENVELOPE", "%s [%s:%d]" % (at, key[0], key[1]))
+    for key in sorted(set(expected_keyed) & set(reported)):
+        actor, pubkey = expected_keyed[key]
+        s = reported[key]
+        if s.get("actor") != actor or s.get("key") != pubkey:
+            _f(f, "SIGNATURE_FIELD_MISMATCH", "%s [%s:%d]" % (at, key[0], key[1]))
+
+    expected_ptrs = reportable_reason_pointers(envelope)
+    reported_ptrs = {}
+    for r in good_reasons:
+        if r["ptr"] in reported_ptrs:
+            _f(f, "DUPLICATE_REASON_POINTER", "%s%s" % (at, r["ptr"]))
+        reported_ptrs[r["ptr"]] = r
+    for ptr in sorted(expected_ptrs - set(reported_ptrs)):
+        _f(f, "REASON_MISSING", "%s%s" % (at, ptr))
+    for ptr in sorted(set(reported_ptrs) - expected_ptrs):
+        _f(f, "REASON_NOT_COMMITTED", "%s%s" % (at, ptr))
 
 
 def _resolve_record(f, cas, src, at):
@@ -929,8 +1003,10 @@ class _NotFreezable(Exception):
     """Raised instead of silently sharing an object with the caller."""
 
 
-MAX_FREEZE_DEPTH = 64        # these contracts are shallow by construction
-MAX_FREEZE_NODES = 1000000   # a budget, not a guess: refusal, never a crash
+MAX_FREEZE_DEPTH = 64          # these contracts are shallow by construction
+MAX_FREEZE_NODES = 1000000     # every visited value AND every key is a node
+MAX_FREEZE_BYTES = 67108864    # 64 MiB of string payload; node count alone
+                               # bounds shape, not memory
 
 
 def _freeze(value, _depth=0, _active=None, _budget=None):
@@ -948,17 +1024,26 @@ def _freeze(value, _depth=0, _active=None, _budget=None):
     are explicit; every refusal becomes `INPUT_NOT_FREEZABLE`.
     """
     if _active is None:
-        _active, _budget = set(), [MAX_FREEZE_NODES]
+        _active, _budget = set(), [MAX_FREEZE_NODES, MAX_FREEZE_BYTES]
+    # Charge BEFORE the primitive return: charging only containers made a
+    # million-element scalar list cost one node, so the declared ceiling
+    # never fired. Nodes bound shape; the byte budget bounds payload, which
+    # a node count alone cannot.
+    _budget[0] -= 1
+    if _budget[0] < 0:
+        raise _NotFreezable("over node budget")
     t = type(value)
-    if value is None or t is bool or t is int or t is str:
+    if t is str:
+        _budget[1] -= len(value.encode("utf-8", "surrogatepass"))
+        if _budget[1] < 0:
+            raise _NotFreezable("over byte budget")
+        return value
+    if value is None or t is bool or t is int:
         return value
     if t is not list and t is not dict:
         raise _NotFreezable(repr(t))
     if _depth >= MAX_FREEZE_DEPTH:
         raise _NotFreezable("over depth budget")
-    _budget[0] -= 1
-    if _budget[0] < 0:
-        raise _NotFreezable("over node budget")
     ident = id(value)
     if ident in _active:
         # Defense in depth, labelled as unisolatable: with this clause removed
@@ -975,6 +1060,12 @@ def _freeze(value, _depth=0, _active=None, _budget=None):
         for k, v in value.items():
             if type(k) is not str:
                 raise _NotFreezable("non-string key")
+            # Keys are nodes and their bytes count too. Unisolatable by a
+            # vector today: any object wide enough to exhaust the budget
+            # through keys alone exhausts it through values first, since a
+            # dict entry always carries both. Kept so the accounting rule is
+            # complete and stated, not counted as covered.
+            _freeze(k, _depth + 1, _active, _budget)
             out[k] = _freeze(v, _depth + 1, _active, _budget)
         return out
     finally:
@@ -1210,7 +1301,11 @@ def _fixture():
         {"kind": "record", "path": ".warrants/records/r.json",
          "entry_digest": by_path[".warrants/records/r.json"], "loaded": True,
          "claimed_wid": None, "computed_wid": sha256_hex(jcs(record["body"])),
-         "id_sound": False, "settlement": [], "signatures": [],
+         "id_sound": False, "settlement": [],
+         # the receipt must account for every signature the envelope carries
+         "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
+                         "key": k, "valid": True, "binding": "unverified"}
+                        for d, m, a, k in envelope_signature_entries(record)],
          "issues": [{"code": "ID_UNSOUND", "severity": "ERR",
                      "at": {"kind": "path", "value": ".warrants/records/r.json"}}],
          "reasons": [{"ptr": "/because/0", "kind": "check", "runtime": "ski@v1",

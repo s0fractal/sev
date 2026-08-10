@@ -31,3 +31,4 @@ round without a SHA is invalid.
 | 6h | 2026-08-10 | **Claude (author)** | **self-review — NOT a gate** | `39bda50` |
 | 6i | 2026-08-10 | Codex | AMEND | `d8f33aa` |
 | 6j | 2026-08-10 | Codex | AMEND | `2fb7c0d` |
+| 6k | 2026-08-10 | Codex | AMEND | `18283bf` |

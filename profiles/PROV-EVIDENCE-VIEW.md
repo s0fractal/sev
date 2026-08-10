@@ -284,6 +284,12 @@ Rules this shape enforces:
   share that one definition, so the graph can never claim to have used what
   the manifest reports as excluded.
 
+- **Coverage is only as honest as the receipt's completeness.** A
+  dataset-relative statement (`coverage`, `L-NO*`) presupposes that the
+  receipt reports everything the committed bytes contain: signatures bound
+  to the envelope's `sigs[]` and one reason per committed `kind:"check"`
+  entry. Without that bijection, "this dataset holds no signature evidence"
+  degrades to "the receipt did not mention any".
 - **Projection reads only the validated view.** The verdict freezes private
   copies of snapshot, receipt, descriptor and committed reasons, and the
   projector consumes those — never the caller's objects, never the store.
