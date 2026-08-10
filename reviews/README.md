@@ -55,3 +55,4 @@ round without a SHA is invalid.
 | 11 | 2026-08-10 | Codex | AMEND — 1 P1: acknowledgements joined without their locator | `7b8d86c` |
 | 12 | 2026-08-10 | Codex | AMEND — 1 P1: exclusion bypassed the fixed join; source issues now scope-checked | `b21c3c3` |
 | 13 | 2026-08-10 | Codex | **APPROVE — receipt core only, eligible for freeze**; no P1 | `4e09d7d` (merged unchanged as `1fb82d6`) |
+| — | 2026-08-10 | **Claude (author)** | **NOT A GATE** — live-store adapter, 3 self-found P1 (2 adapter, 1 MVP projector); counts toward no freeze criterion | `d4a518d` + `author/live-warrant-adapter` |

@@ -417,6 +417,20 @@ def _project_validated(view, cas) -> tuple:
     if has_unclaimed:
         absent.append(loss("L-NOUNCLAIMED", "the snapshot pins unclaimed members; "
                                             "they are not projected"))
+    # A projected source's issues vanish from the graph. Exclusions carry
+    # theirs verbatim in the view manifest, so the asymmetry was invisible:
+    # a source good enough to project looks unqualified in RDF no matter what
+    # the receipt said about it. Found against a LIVE store, where the owning
+    # protocol WARNed on all 16 records ("binding unverified") and the graph
+    # asserted 16 filings with no trace of it.
+    excluded_occurrences = {(x["path"], x["entry_digest"]) for x in exclusions}
+    has_projected_issues = any(
+        s.get("issues") for s in core["sources"]
+        if (s["path"], s["entry_digest"]) not in excluded_occurrences)
+    if has_projected_issues:
+        absent.append(loss("L-NOISSUE", "projected sources carry issues in the "
+                                        "receipt; NO issue reaches the graph, so "
+                                        "an unqualified node is not a clean one"))
     # §4.1 body mapping only applies where a record was actually projected: a
     # blob-only subroot has no body to map, and claiming the loss would be a
     # caveat on an absent fact — the very thing this manifest exists to stop
@@ -453,6 +467,8 @@ def _project_validated(view, cas) -> tuple:
         not_emitted.add("settlement")
     if has_unclaimed:
         not_emitted.add("unclaimed")
+    if has_projected_issues:
+        not_emitted.add("issue")
     if "record" in emitted_kinds:      # a body exists, so its mapping is missing
         not_emitted.update(("actor", "policy-plan", "subject", "evidence", "prior"))
 
@@ -1310,6 +1326,49 @@ def run_vectors():
     sm.check_true("coverage qualifies what 'projected' means",
                   lambda: "signature" in cov["not_emitted"]
                   and "record" in cov["emitted"])
+
+    # Live-store finding: the owning protocol WARNed on every record
+    # ("binding unverified") and the graph asserted every filing with no
+    # trace of it. Exclusions carry issues verbatim; projected sources
+    # dropped theirs, so a node good enough to project looked unqualified.
+    sm.check_true("a clean projected source declares no issue loss",
+                  lambda: "L-NOISSUE" not in codesL
+                  and "issue" not in cov["not_emitted"])
+    snapW, receiptW, casW = ski_fixture()
+    warned = receiptW["core"]["sources"][1]
+    warned["issues"] = [{"code": "WARRANT_WARN", "severity": "WARN",
+                         "at": {"kind": "path", "value": warned["path"]}}]
+    receiptW["core"]["warnings"] = 1
+    resW, fW = _project_objects(snapW, receiptW, casW)
+    covW = resW["view_manifest"]["coverage"]
+    codesW = [e["code"] for e in resW["loss_manifest"]["entries"]]
+    sm.check_true("a WARN issue does not exclude its source",
+                  lambda: fW == [] and resW["view_manifest"]["sources_excluded"] == 0)
+    sm.check_true("...but no issue reaches the graph",
+                  lambda: b"WARRANT_WARN" not in resW["nquads"])
+    sm.check_true("...and that silence is declared as L-NOISSUE",
+                  lambda: "L-NOISSUE" in codesW and "issue" in covW["not_emitted"])
+    # The loss is about PROJECTED sources. Issues on an excluded source are
+    # already carried verbatim in the exclusion, so claiming the loss for
+    # them would put a caveat on a fact the manifest does in fact preserve.
+    snapX, receiptX, casX = ski_fixture()
+    droppedX = receiptX["core"]["sources"][1]
+    # a plain reported ERR, not `ID_UNSOUND`: id-soundness is DERIVED from the
+    # bytes, so asserting it would be refused as inconsistent (re-gate f7aa39c)
+    droppedX["issues"] = [{"code": "WARRANT_ERR", "severity": "ERR",
+                           "at": {"kind": "path", "value": droppedX["path"]}}]
+    receiptX["core"]["errors"] = 1
+    receiptX["core"]["ok"] = False
+    resX, fX = _project_objects(snapX, receiptX, casX)
+    covX = resX["view_manifest"]["coverage"]
+    sm.check_true("issues on an EXCLUDED source do not raise L-NOISSUE",
+                  lambda: fX == [] and resX["view_manifest"]["sources_excluded"] == 1
+                  and "L-NOISSUE" not in
+                  [e["code"] for e in resX["loss_manifest"]["entries"]]
+                  and "issue" not in covX["not_emitted"])
+    sm.check_true("...while the exclusion still carries them verbatim",
+                  lambda: resX["view_manifest"]["exclusions"][0]["issues"]
+                  == droppedX["issues"])
 
     # absent semantics must not stringify into the run's hash material
     snapM, receiptM, casM = ski_fixture()
