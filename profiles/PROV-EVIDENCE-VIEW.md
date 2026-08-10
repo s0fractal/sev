@@ -371,6 +371,7 @@ the hash, not the host — and not this graph either."
 {
   "view": "sev@v0",
   "profile_revision": "<sha256 of this document's bytes>",
+  "projector_digest": "<sha256 of the projector implementation's bytes — the graph digest means nothing without knowing which semantics produced it>",
   "bundle_root": "<hex64 — the ecosystem.snapshot@v0 identity>",
   "receipts": [
     { "protocol": "warrant", "subroot": "<hex64>",

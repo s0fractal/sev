@@ -794,11 +794,25 @@ def _resolve_reason(f, cas, src, reason, rat):
     if not (isinstance(because, list) and idx < len(because)):
         _f(f, "REASON_PTR_UNRESOLVABLE", rat)
         return
+    committed = because[idx]
     try:
-        if sha256_hex(jcs(because[idx])) != reason["reason_digest"]:
+        if sha256_hex(jcs(committed)) != reason["reason_digest"]:
             _f(f, "REASON_DIGEST_MISMATCH", rat)
+            return
     except ValueError:
         _f(f, "REASON_DIGEST_MISMATCH", rat)
+        return
+    # The digest alone proves the bytes, not that the receipt's role fields
+    # describe them: a receipt could carry runtime "evil@v1" over a committed
+    # ski@v1 reason and the graph would assert the swap (round-6 PR review).
+    if not isinstance(committed, dict):
+        _f(f, "REASON_ROLE_MISMATCH", rat)
+        return
+    if (committed.get("kind") != reason["kind"]
+            or committed.get("runtime") != reason["runtime"]):
+        _f(f, "REASON_ROLE_MISMATCH", rat)
+    if committed.get("verdict") != reason["outcome"].get("claimed_verdict"):
+        _f(f, "REASON_CLAIM_MISMATCH", rat)
 
 
 # ------------------------------------------------- composed public verdict
@@ -1142,6 +1156,14 @@ def run_vectors():
                      .update(reason_digest="9" * 64))
     check_has("wrong reason digest -> REASON_DIGEST_MISMATCH",
               validate_warrant_receipt(snap, baddig, cas), "REASON_DIGEST_MISMATCH")
+    swapped = _mutate(receipt, lambda r: r["core"]["sources"][1]["reasons"][0]
+                      .update(runtime="evil@v1"))
+    check_has("runtime swapped over committed ski@v1 reason -> REASON_ROLE_MISMATCH",
+              validate_warrant_receipt(snap, swapped, cas), "REASON_ROLE_MISMATCH")
+    lied = _mutate(receipt, lambda r: r["core"]["sources"][1]["reasons"][0]
+                   ["outcome"].update(claimed_verdict="fail", observed_verdict="fail"))
+    check_has("claimed verdict differs from committed reason -> REASON_CLAIM_MISMATCH",
+              validate_warrant_receipt(snap, lied, cas), "REASON_CLAIM_MISMATCH")
 
     # --- grade-aware severity + settlement at base
     setl = [{"jurisdiction": "a" * 64, "active": True,

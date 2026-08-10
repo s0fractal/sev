@@ -41,14 +41,36 @@ def _iri(value: str) -> str:
     return "<%s>" % value
 
 
+def _escape(s: str) -> str:
+    """Canonical literal escaping: the ECHAR set plus \\u-escapes for every
+    remaining C0 control. A raw 0x09 inside a literal is grammar-legal
+    N-Quads but not canonical bytes (round-6 PR review, P1-3)."""
+    out = []
+    for ch in s:
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch == '"':
+            out.append('\\"')
+        elif ch == "\n":
+            out.append("\\n")
+        elif ch == "\r":
+            out.append("\\r")
+        elif ch == "\t":
+            out.append("\\t")
+        elif ord(ch) < 0x20:
+            out.append("\\u%04X" % ord(ch))
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def _lit(value, datatype=None) -> str:
     if isinstance(value, bool):
         return '"%s"' % ("true" if value else "false")
     if isinstance(value, int):
         return '"%d"^^<%s>' % (value, XSD_INT)
-    escaped = (str(value).replace("\\", "\\\\").replace('"', '\\"')
-               .replace("\n", "\\n").replace("\r", "\\r"))
-    return '"%s"%s' % (escaped, ("^^<%s>" % datatype) if datatype else "")
+    return '"%s"%s' % (_escape(str(value)),
+                       ("^^<%s>" % datatype) if datatype else "")
 
 
 class Graph:
@@ -96,10 +118,14 @@ def iri_receipt(core_digest):
 
 # ---------------------------------------------------------------- projection
 
-def _tool_digest():
+def _file_digest(*relpath):
     here = os.path.dirname(os.path.abspath(__file__))
-    with open(os.path.join(here, "snapshot_model.py"), "rb") as fh:
+    with open(os.path.join(here, *relpath), "rb") as fh:
         return sm.sha256_hex(fh.read())
+
+
+def _tool_digest():
+    return _file_digest("snapshot_model.py")
 
 
 def project(snapshot, receipt, cas) -> tuple:
@@ -123,13 +149,27 @@ def project(snapshot, receipt, cas) -> tuple:
           _lit(core["subroot_descriptor_digest"]), vgraph)
 
     unverified = 0
+    exclusions = []
+
+    def _exclude(src, why):
+        exclusions.append({"path": src["path"],
+                           "entry_digest": src["entry_digest"],
+                           "codes": sorted({why} | {x["code"] for x in src["issues"]
+                                           if x["severity"] == "ERR"})})
+
     for src in core["sources"]:
+        if any(x["severity"] == "ERR" for x in src["issues"]):
+            _exclude(src, "ERR_ISSUES")
+            continue  # nothing with an ERR judgement becomes a graph node
+        if src["loaded"] is not True:
+            _exclude(src, "NOT_LOADED")
+            continue
         if src["kind"] == "blob":
             g.add(iri_blob(src["entry_digest"]), RDF_TYPE, _iri(PROV + "Entity"))
-        if src["kind"] != "record" or not src["loaded"]:
+        if src["kind"] != "record":
             continue
-        if src["id_sound"] is not True or any(
-                x["severity"] == "ERR" for x in src["issues"]):
+        if src["id_sound"] is not True:
+            _exclude(src, "ID_UNSOUND")
             continue  # R4 rule: only id-sound, ERR-free records become nodes
         wid = src["computed_wid"]
         rec, filing = iri_record(wid), iri_filing(src["entry_digest"])
@@ -180,6 +220,8 @@ def project(snapshot, receipt, cas) -> tuple:
     sources = core["sources"]
     view_manifest = {
         "view": "sev@v0",
+        "profile_revision": _file_digest("..", "profiles", "PROV-EVIDENCE-VIEW.md"),
+        "projector_digest": _file_digest("sev_projector.py"),
         "bundle_root": snapshot["bundle_root"],
         "receipts": [{"protocol": "warrant",
                       "subroot_descriptor_digest": core["subroot_descriptor_digest"],
@@ -187,9 +229,9 @@ def project(snapshot, receipt, cas) -> tuple:
                       "grade": core["grade"]}],
         "unjudged_subroots": unjudged,
         "sources_in_receipts": len(sources),
-        "sources_projected": len(sources),
-        "sources_excluded": 0,
-        "exclusions": [],
+        "sources_projected": len(sources) - len(exclusions),
+        "sources_excluded": len(exclusions),
+        "exclusions": exclusions,
         "unverified_reasons": unverified,
         "graph_digest": sm.sha256_hex(nquads),
         "loss_manifest_digest": sm.sha256_hex(sm.jcs(loss_manifest)),
@@ -333,6 +375,40 @@ def run_vectors():
                       for e in res3["loss_manifest"]["entries"]))
     sm.check_true("unjudged subroots listed in view manifest",
                   lambda: res3["view_manifest"]["unjudged_subroots"] == ["bos"])
+
+    # round-6 PR review, P1-3: canonical literal escaping
+    sm.check_equal("tab escapes as \\t", _lit("a\tb"), '"a\\tb"')
+    sm.check_equal("other C0 controls escape as \\uXXXX",
+                   _lit("a\x01b"), '"a\\u0001b"')
+    sm.check_true("no raw control bytes in N-Quads except LF",
+                  lambda: not any(b < 0x20 and b != 0x0A for b in nq))
+
+    # round-6 PR review, P1-2: honest negative receipt -> truthful manifest
+    def _negative(r):
+        src = r["core"]["sources"][1]
+        src.update(claimed_wid=None, id_sound=False,
+                   issues=[{"code": "ID_UNSOUND", "severity": "ERR",
+                            "at": {"kind": "path", "value": src["path"]}}])
+        r["core"].update(ok=False, errors=1)
+    snap4, receipt4, cas4 = fixture()
+    _negative(receipt4)
+    res4, f4 = project(snap4, receipt4, cas4)
+    sm.check_equal("negative receipt still projects (an honest ERR is evidence)",
+                   f4, [])
+    vm = res4["view_manifest"]
+    sm.check_true("manifest counts the exclusion truthfully",
+                  lambda: vm["sources_excluded"] == 1
+                  and vm["sources_projected"] == 1
+                  and vm["sources_projected"] + vm["sources_excluded"]
+                  == vm["sources_in_receipts"]
+                  and "ID_UNSOUND" in vm["exclusions"][0]["codes"])
+    sm.check_true("excluded record has no graph node",
+                  lambda: b"urn:wrt:record:" not in res4["nquads"])
+
+    # round-6 PR review, P2-2: graph digest tied to projector semantics
+    sm.check_true("profile_revision and projector_digest present, hex64",
+                  lambda: bool(sm.HEX64.match(vm["profile_revision"]))
+                  and bool(sm.HEX64.match(vm["projector_digest"])))
 
 
 def main():

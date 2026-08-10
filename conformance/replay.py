@@ -19,6 +19,9 @@ import snapshot_model as sm  # noqa: E402
 def main():
     with open(os.path.join(HERE, "parse-strict.vectors.json")) as fh:
         fixtures = json.load(fh)
+    if not fixtures.get("cases"):
+        print("FAIL  empty fixture set — ALL PASS over zero cases is vacuous")
+        return 1
     failed = 0
     for case in fixtures["cases"]:
         raw = base64.b64decode(case["raw_b64"])
