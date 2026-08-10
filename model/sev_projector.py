@@ -1965,6 +1965,65 @@ def run_vectors():
                   lambda: ("disjoint", "activity+entity", "urn:x")
                   in _prov_violations(_both))
 
+    # round 9: a strict-parser finding must not be discarded — but envelope
+    # canonicality is NOT one of Warrant's requirements
+    _up_raw = open(UPSTREAM_ACCEPT, "rb").read()
+    sm.check_equal("the real upstream Warrant record is non-canonical bytes",
+                   [x["code"] for x in sm.parse_strict(_up_raw)[1]],
+                   ["NOT_CANONICAL"])
+    sm.check_true("...and it is still readable evidence (envelopes are not hashed)",
+                  lambda: project(*fixture())[1] == []
+                  and b"urn:wrt:record:" in project(*fixture())[0]["nquads"])
+
+    def _bad_bytes_record(raw, ack=False, wid=None, sound=False):
+        path = ".warrants/records/%s.json" % ("c" * 64)
+        files = {path: raw, ".warrants/blobs/p": b"policy"}
+        cs = {sm.sha256_hex(v): v for v in files.values()}
+        un = sm.seal_universe(files)
+        dd = sm.subroot_descriptor("warrant",
+                                   {"name": "warrant", "version": "0.4",
+                                    "spec_digest": sm.sha256_hex(b"spec")},
+                                   ".warrants/", un)
+        sn = sm.snapshot_object([dd], [])
+        bp = {e["path"]: e["sha256"] for e in un}
+        issues = ([{"code": "RECORD_UNREADABLE", "severity": "ERR",
+                    "at": {"kind": "path", "value": path}}] if ack else [])
+        srcs = sorted([
+            {"kind": "blob", "path": ".warrants/blobs/p",
+             "entry_digest": bp[".warrants/blobs/p"], "loaded": True, "issues": []},
+            {"kind": "record", "path": path, "entry_digest": bp[path],
+             "loaded": True, "claimed_wid": "c" * 64, "computed_wid": wid,
+             "id_sound": sound, "settlement": [], "signatures": [],
+             "issues": issues, "reasons": []}],
+            key=lambda x: (sm.path_sort_key(x["path"]), x["entry_digest"]))
+        cr = {"subroot_descriptor_digest": sm.subroot_descriptor_digest(dd),
+              "grade": "base", "trust_config_digest": None,
+              "execution_policy": {"runtimes": []},
+              "ok": not issues, "errors": len(issues), "warnings": 0,
+              "global_issues": [], "sources": srcs}
+        return sn, {"receipt": "warrant.verification-receipt@v0", "core": cr,
+                    "producer": {"impl": "x", "artifact_digest": None,
+                                 "spec": "0.4", "report_digest": "f" * 64,
+                                 "local_notes": []}}, cs
+
+    # findings that ARE fatal: bytes Warrant's own contract rejects
+    for label, raw in [
+            ("duplicate members", b'{"body":1,"body":2}'),
+            ("trailing data", b'{"body":{}} trailing'),
+            ("a float", b'{"body":{"ts":1.5}}'),
+            ("a BOM", b'\xef\xbb\xbf{"body":{}}')]:
+        snF, rcF, csF = _bad_bytes_record(raw)
+        resF, fF = project(snF, rcF, csF)
+        sm.check_true("a record with %s is unreadable and must be acknowledged"
+                      % label,
+                      lambda resF=resF, fF=fF: resF is None and any(
+                          x["code"] == "RECORD_UNREADABLE_UNREPORTED" for x in fF))
+        snG, rcG, csG = _bad_bytes_record(raw, ack=True)
+        resG, fG = project(snG, rcG, csG)
+        sm.check_true("...and acknowledged, it is valid negative evidence",
+                      lambda resG=resG, fG=fG: fG == []
+                      and resG["view_manifest"]["sources_excluded"] == 1)
+
     # round 8: malformed evidence, honestly acknowledged, is VALID evidence
     def _unparseable(ack=True, wid_residue=False, spurious=False):
         """Seal a record whose bytes do not parse (or, for `spurious`, one

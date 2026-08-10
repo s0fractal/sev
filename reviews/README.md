@@ -50,3 +50,4 @@ round without a SHA is invalid.
 | 7 | 2026-08-10 | **Kimi** | AMEND — 2 P1, 4 P2 | `18283bf` (an earlier SHA; findings re-verified against `d28abd2` before closing) |
 | 7-re | 2026-08-10 | Kimi | zero P1; one P2 residue (stale-count guard blind to hyphens) | `6fbe3af` |
 | 8 | 2026-08-10 | Codex (+ Kimi concurring) | snapshot §7 **APPROVE for freeze**; receipt core AMEND — 1 P1 | `7935400` |
+| 9 | 2026-08-10 | Codex | AMEND — 1 P1; **partial disagreement filed**: structural half fixed, prescriptive half disputed with SPEC citations | `21ee454` |

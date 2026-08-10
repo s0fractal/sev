@@ -1116,7 +1116,29 @@ def _resolve_record(f, cas, src, at, issues):
         _f(f, "RECORD_UNRESOLVABLE", at)
         return None
     obj, _pf = parse_strict(raw)
-    parsed_ok = obj is not None and isinstance(obj, dict)
+    # `parse_strict` can hand back a decoded object TOGETHER with a finding,
+    # so testing `obj` alone laundered rejected bytes into a projected
+    # evidence node (round 9). Readability therefore requires an empty
+    # finding list — with exactly one documented exception.
+    #
+    # NOT_CANONICAL is not fatal for a Warrant record envelope, because
+    # Warrant does not require one: `WarrantID = SHA-256(canonical_json(body))`
+    # and "the envelope is not hashed" (warrant SPEC §4, §5.1 migration note),
+    # and that store's only writer emits `json.dumps(env, indent=2,
+    # sort_keys=True)` — every real record file on disk is pretty-printed,
+    # including the vendored upstream example. Treating envelope
+    # canonicality as mandatory would not harden SEV; it would make it unable
+    # to read any genuine Warrant store. Canonicality still binds where the
+    # format binds it: the body is re-canonicalized when the WarrantID is
+    # re-derived, and each reason when its digest is checked.
+    # Structural, and labelled unisolatable: today NOT_CANONICAL is the ONLY
+    # code `parse_strict` returns beside a decoded object, so with it exempt
+    # no vector can distinguish this list from the old `obj is not None`
+    # test. It is written as a list anyway, because the laundering was a
+    # property of the shape of the check, not of the code that happened to
+    # take that path.
+    fatal = [x for x in _pf if x["code"] != "NOT_CANONICAL"]
+    parsed_ok = isinstance(obj, dict) and not fatal
     acknowledged = any(x["code"] == "RECORD_UNREADABLE" and x["severity"] == "ERR"
                        for x in issues)
     if not parsed_ok:
