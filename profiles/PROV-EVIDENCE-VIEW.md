@@ -284,6 +284,12 @@ Rules this shape enforces:
   share that one definition, so the graph can never claim to have used what
   the manifest reports as excluded.
 
+- **Acknowledgement is semantic.** A malformed occurrence counts as
+  reported only when the receipt carries an issue matching the normative
+  `(pointer, code, severity)` tuple; an unrelated issue at the same pointer
+  legalises nothing. Presence for `coverage`/`L-NO*` is derived from the
+  total derivation, so a malformed signature is signature evidence — never
+  absence — even when no `signatures[]` entry exists for it.
 - **Malformed committed evidence is evidence, not absence.** Derivation
   over the envelope is total: unparseable `sigs`/`because` shapes become
   located malformed occurrences the receipt must report, never an empty

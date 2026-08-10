@@ -6,7 +6,7 @@
 > a normative copy and instead pins the Warrant artifact/version/digest, and
 > this document remains here as provenance, marked superseded.
 
-**Status:** PROPOSAL SKETCH **rev 8** (2026-08-10), design-only, not filed.
+**Status:** PROPOSAL SKETCH **rev 9** (2026-08-10), design-only, not filed.
 Rev 5 (fifth Codex review, AMEND — compositional layer): the public verdict
 is now **`validate_warrant_receipt(snapshot, receipt, cas)`** in the model —
 descriptor lookup by digest, semantic role check (incl. non-null
@@ -204,6 +204,26 @@ JCS-canonical I-JSON per warrant SPEC §4; closed schemas; one type tag.
 - ▲ **`global_issues[]`** carries store- and settlement-level problems that
   belong to no single source file (invalid threshold policy, unverified
   genesis, missing jurisdiction root).
+- ▲ **Acknowledging a malformed occurrence is semantic, not positional
+  (rev 9).** The receipt must carry an issue matching a normative
+  `(pointer, code, severity)` tuple — matching the JSON pointer alone let any
+  unrelated WARN at the same address legalise malformed evidence, keeping
+  `ok:true`, avoiding exclusion, and letting coverage call a malformed
+  signature "no signature evidence". The matrix is not one universal
+  severity, because warrant SPEC §5 distinguishes fatal from survivable:
+
+  | Occurrence | Code | Severity |
+  |---|---|---|
+  | `sigs` is not a list | `MALFORMED_ENVELOPE` | ERR |
+  | a malformed signature, while a reported-valid signature by `body.actor.id` survives | `MALFORMED_SIGNATURE` | WARN or ERR |
+  | a malformed signature with no surviving valid actor-signature | `MALFORMED_SIGNATURE` | ERR |
+  | `because` is not a list | `MALFORMED_BODY_SCHEMA` | ERR |
+  | a malformed `because` entry | `MALFORMED_REASON` | ERR |
+
+  Evidence **presence** is likewise derived from the total derivation: a
+  malformed occurrence counts as evidence the input held even though it is
+  represented by an issue rather than an entry, so coverage can never read
+  it as absence.
 - ▲ **The binding is over EVERY committed occurrence, not the well-formed
   subset (rev 8).** Derivation is total: `sigs`/`because` that are not
   lists, entries that are not objects, and entries failing warrant SPEC §3's

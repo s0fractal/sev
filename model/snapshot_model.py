@@ -822,8 +822,13 @@ def validate_receipt_core(core, descriptor=None, cas=None, view=None) -> list:
         # dataset-relative coverage would faithfully describe whatever the
         # receipt chose to disclose.
         if parsed is not None:
-            _bind_to_envelope(f, parsed, src, good_sigs, good_reasons,
-                              at, issues)
+            summary = _bind_to_envelope(f, parsed, src, good_sigs,
+                                        good_reasons, at, issues)
+            if view is not None:
+                # evidence PRESENCE is derived from the total derivation, so
+                # a malformed occurrence still counts as evidence the input
+                # held — coverage must not read it as absence
+                view.setdefault("evidence", {})[src["path"]] = summary
 
     _ordered(f, good_sources, lambda s: (path_sort_key(s["path"]), s["entry_digest"]),
              "SOURCES_NOT_SORTED", "/core/sources")
@@ -913,6 +918,44 @@ def reportable_reason_pointers(envelope):
     return reportable, malformed
 
 
+# Normative code/severity matrix for malformed committed occurrences.
+# Not one universal severity: warrant SPEC §5 lets a malformed EXTRA
+# co-signature be a WARN while a valid actor-signature survives, but a body
+# or reason whose schema is invalid, and an envelope with no valid
+# actor-signature left, are ERR.
+MALFORMED_SIG_CODE = "MALFORMED_SIGNATURE"
+MALFORMED_ENVELOPE_CODE = "MALFORMED_ENVELOPE"
+MALFORMED_REASON_CODE = "MALFORMED_REASON"
+MALFORMED_BODY_CODE = "MALFORMED_BODY_SCHEMA"
+
+
+def _expected_malformed_issues(envelope, expected_sigs, sig_malformed,
+                               reason_malformed, good_sigs):
+    """[(pointer, code, {allowed severities})] the receipt MUST report."""
+    body = envelope.get("body") if isinstance(envelope, dict) else None
+    actor_id = None
+    if isinstance(body, dict) and isinstance(body.get("actor"), dict):
+        actor_id = body["actor"].get("id")
+    # a surviving, reported-valid signature by the body's own actor is what
+    # makes a malformed EXTRA co-signature non-fatal (SPEC §5)
+    actor_sig_ok = any(
+        s.get("valid") is True and s.get("actor") == actor_id
+        for s in good_sigs) and actor_id is not None
+    out = []
+    for ptr in sig_malformed:
+        if ptr == "/sigs":
+            out.append((ptr, MALFORMED_ENVELOPE_CODE, {"ERR"}))
+        else:
+            out.append((ptr, MALFORMED_SIG_CODE,
+                        {"WARN", "ERR"} if actor_sig_ok else {"ERR"}))
+    for ptr in reason_malformed:
+        if ptr == "/body/because":
+            out.append((ptr, MALFORMED_BODY_CODE, {"ERR"}))
+        else:
+            out.append((ptr, MALFORMED_REASON_CODE, {"ERR"}))
+    return out
+
+
 def _bind_to_envelope(f, envelope, src, good_sigs, good_reasons, at, issues):
     expected_sigs, sig_malformed = envelope_signature_entries(envelope)
     expected_keyed = {(d, m): (a, k) for d, m, a, k in expected_sigs}
@@ -943,15 +986,21 @@ def _bind_to_envelope(f, envelope, src, good_sigs, good_reasons, at, issues):
     for ptr in sorted(set(reported_ptrs) - expected_ptrs):
         _f(f, "REASON_NOT_COMMITTED", "%s%s" % (at, ptr))
 
-    # A malformed committed occurrence may not be silently dropped: it is not
-    # a normal entry, so it must appear as a precisely located issue on this
-    # source — which then carries the record into exclusions honestly.
-    located = {x["at"].get("value") for x in issues
-               if isinstance(x.get("at"), dict)
+    # A malformed committed occurrence must be acknowledged SEMANTICALLY:
+    # matching on the JSON pointer alone let any unrelated WARN at the same
+    # address legalise it — leaving ok:true, no exclusion, and coverage free
+    # to call a malformed signature "no signature evidence".
+    present = {(x["code"], x["severity"], x["at"].get("value"))
+               for x in issues if isinstance(x.get("at"), dict)
                and x["at"].get("kind") == "json-pointer"}
-    for ptr in sig_malformed + reason_malformed:
-        if ptr not in located:
-            _f(f, "MALFORMED_ENVELOPE_UNREPORTED", "%s%s" % (at, ptr))
+    for ptr, code, severities in _expected_malformed_issues(
+            envelope, expected_sigs, sig_malformed, reason_malformed, good_sigs):
+        if not any((code, sev, ptr) in present for sev in severities):
+            _f(f, "MALFORMED_ENVELOPE_UNREPORTED",
+               "%s%s [%s %s]" % (at, ptr, code, "|".join(sorted(severities))))
+
+    return {"signature_occurrences": len(expected_sigs) + len(sig_malformed),
+            "check_occurrences": len(expected_ptrs) + len(reason_malformed)}
 
 
 def _resolve_record(f, cas, src, at):

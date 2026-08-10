@@ -33,3 +33,4 @@ round without a SHA is invalid.
 | 6j | 2026-08-10 | Codex | AMEND | `2fb7c0d` |
 | 6k | 2026-08-10 | Codex | AMEND | `18283bf` |
 | 6l | 2026-08-10 | Codex | AMEND | `2df4d0b` |
+| 6m | 2026-08-10 | Codex | AMEND | `84b6d06` |

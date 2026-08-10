@@ -327,8 +327,13 @@ def project(snapshot, receipt, cas) -> tuple:
     # the data actually exists, because a loss manifest that describes
     # caveats on absent facts is worse than none: it reads as
     # "present, with reservations" (self-review 2026-08-10).
-    has_sigs = any(s.get("signatures") for s in core["sources"]
-                   if s.get("kind") == "record")
+    # presence is derived from the TOTAL derivation: a malformed signature
+    # occurrence is still signature evidence the input held, even though it
+    # is represented by an issue rather than a signatures[] entry
+    evidence = view.get("evidence", {})
+    has_sigs = (any(s.get("signatures") for s in core["sources"]
+                    if s.get("kind") == "record")
+                or any(e.get("signature_occurrences") for e in evidence.values()))
     has_settlement = any(s.get("settlement") for s in core["sources"]
                          if s.get("kind") == "record")
     has_unclaimed = bool(snapshot.get("unclaimed"))
@@ -1501,17 +1506,58 @@ def run_vectors():
     resPC, fPC = project(snPC, rcPC, csPC)
     sm.check_equal("well-formed prose beside a check projects cleanly", fPC, [])
 
-    # ...and a malformed occurrence that IS reported as a located issue is
-    # accepted, carrying the record into exclusions honestly
-    snR, rcR, csR = _with_committed(sigs=[7])
-    rec_src = [s for s in rcR["core"]["sources"] if s["kind"] == "record"][0]
-    rec_src["issues"] = [{"code": "MALFORMED_SIGNATURE", "severity": "ERR",
-                          "at": {"kind": "json-pointer", "value": "/sigs/0"}}]
-    rcR["core"].update(ok=False, errors=1)
-    resR, fR = project(snR, rcR, csR)
-    sm.check_equal("a reported malformed occurrence is accepted", fR, [])
+    # The acknowledgement must be SEMANTIC: pointer alone let any unrelated
+    # issue at the same address legalise malformed evidence.
+    def _with_issue(code, severity, ptr="/sigs/0", sigs=[7], because=None,
+                    errors=None, warnings=None):
+        sn, rc, cs = _with_committed(sigs=sigs, because=because)
+        rec_src = [x for x in rc["core"]["sources"] if x["kind"] == "record"][0]
+        rec_src["issues"] = [{"code": code, "severity": severity,
+                              "at": {"kind": "json-pointer", "value": ptr}}]
+        errs = 1 if severity == "ERR" else 0
+        rc["core"].update(ok=errs == 0, errors=errs,
+                          warnings=1 if severity == "WARN" else 0)
+        return project(sn, rc, cs)
+
+    resU, fU = _with_issue("UNRELATED_WARNING", "WARN")
+    sm.check_true("an unrelated issue at the right pointer does NOT legalise it",
+                  lambda: resU is None
+                  and any(x["code"] == "MALFORMED_ENVELOPE_UNREPORTED" for x in fU))
+
+    resV, fV = _with_issue("MALFORMED_SIGNATURE", "WARN")
+    sm.check_true("right code, wrong severity (no valid actor sig) -> refusal",
+                  lambda: resV is None
+                  and any(x["code"] == "MALFORMED_ENVELOPE_UNREPORTED" for x in fV))
+
+    resW, fW3 = _with_issue("MALFORMED_SIGNATURE", "ERR", ptr="/body/because/0",
+                            sigs=None, because=[7])
+    sm.check_true("a signature code over a malformed reason -> refusal",
+                  lambda: resW is None
+                  and any(x["code"] == "MALFORMED_ENVELOPE_UNREPORTED" for x in fW3))
+
+    resR, fR = _with_issue("MALFORMED_SIGNATURE", "ERR")
+    sm.check_equal("the normative (pointer, code, severity) tuple is accepted",
+                   fR, [])
     sm.check_true("...and excludes the record honestly",
                   lambda: resR["view_manifest"]["sources_excluded"] == 1)
+    sm.check_true("...while coverage still knows signature evidence existed",
+                  lambda: "L-NOSIG" in [e["code"] for e in
+                                        resR["loss_manifest"]["entries"]])
+
+    # SPEC §5 path: a surviving valid actor-signature makes a malformed EXTRA
+    # co-signature a WARN, and the record stays in the graph
+    snX, rcX, csX = _with_committed(
+        sigs=[{"actor": "signer@example", "key": "c" * 64, "sig": "d" * 128}, 7])
+    rec_srcX = [x for x in rcX["core"]["sources"] if x["kind"] == "record"][0]
+    rec_srcX["signatures"][0]["valid"] = True
+    rec_srcX["issues"] = [{"code": "MALFORMED_SIGNATURE", "severity": "WARN",
+                           "at": {"kind": "json-pointer", "value": "/sigs/1"}}]
+    rcX["core"].update(warnings=1)
+    resX, fX2 = project(snX, rcX, csX)
+    sm.check_equal("malformed extra co-signature beside a valid actor signature "
+                   "is a WARN", fX2, [])
+    sm.check_true("...the record is still projected",
+                  lambda: resX["view_manifest"]["sources_excluded"] == 0)
 
     # re-gate P2-1: the empty-corpus guard needs its own negative control
     code_guard = (
