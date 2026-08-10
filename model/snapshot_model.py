@@ -875,7 +875,49 @@ def validate_warrant_receipt(snapshot, receipt, cas=None, expected_version="0.4"
     for path in sorted(set(want) & set(have), key=path_sort_key):
         if want[path] != have[path]:
             _f(f, "SOURCE_DIGEST_MISMATCH", path)
+
+    # Role classification: `kind` was only enum-checked, so a receipt could
+    # relabel a committed record as "other" (record vanishes, graph asserts a
+    # generic entity) or a blob as "genesis" — the receipt choosing what the
+    # graph asserts or omits. The store layout DERIVES the role; the receipt
+    # only reports it, and disagreement is a finding.
+    prefix = descriptor.get("prefix")
+    if not isinstance(prefix, str):
+        return f
+    for s in core.get("sources", []) if isinstance(core.get("sources"), list) else []:
+        if not (isinstance(s, dict) and isinstance(s.get("path"), str)):
+            continue
+        path = s["path"]
+        if path not in want:
+            continue  # already reported as SOURCE_NOT_IN_UNIVERSE
+        derived_kind, derived_wid = classify_warrant_source(path, prefix)
+        if s.get("kind") != derived_kind:
+            _f(f, "SOURCE_KIND_MISMATCH", path)
+        elif derived_kind == "record" and s.get("claimed_wid") != derived_wid:
+            # claimed_wid is a *claim read off the filename*, not free text
+            _f(f, "CLAIMED_WID_NOT_PATH", path)
     return f
+
+
+def classify_warrant_source(path, prefix):
+    """(kind, claimed_wid) derived from the Warrant store layout alone.
+
+    `records/<hex64>.json` → record with that WarrantID claim; a non-wid-shaped
+    name in `records/` is still a record, with a null claim. `blobs/*` → blob,
+    `genesis.json` → genesis, anything else under the prefix → other.
+    """
+    if not path.startswith(prefix):
+        return "other", None
+    rest = path[len(prefix):]
+    if rest == "genesis.json":
+        return "genesis", None
+    if rest.startswith("records/"):
+        name = rest[len("records/"):]
+        stem = name[:-len(".json")] if name.endswith(".json") else None
+        return "record", (stem if _is_hex64(stem) else None)
+    if rest.startswith("blobs/"):
+        return "blob", None
+    return "other", None
 
 
 # ------------------------------------------------------------------ harness
@@ -1173,6 +1215,38 @@ def run_vectors():
                    ["outcome"].update(claimed_verdict="fail", observed_verdict="fail"))
     check_has("claimed verdict differs from committed reason -> REASON_CLAIM_MISMATCH",
               validate_warrant_receipt(snap, lied, cas), "REASON_CLAIM_MISMATCH")
+
+    # role derived from the store layout, not reported by the receipt
+    check_equal("classifier: records/<wid>.json",
+                classify_warrant_source(".w/records/%s.json" % ("a" * 64), ".w/"),
+                ("record", "a" * 64))
+    check_equal("classifier: non-wid record name claims nothing",
+                classify_warrant_source(".w/records/notes.json", ".w/"),
+                ("record", None))
+    check_equal("classifier: blobs/genesis/other",
+                [classify_warrant_source(".w/blobs/x", ".w/")[0],
+                 classify_warrant_source(".w/genesis.json", ".w/")[0],
+                 classify_warrant_source(".w/README", ".w/")[0]],
+                ["blob", "genesis", "other"])
+
+    def _relabel(r, idx, kind):
+        s = r["core"]["sources"][idx]
+        for k in list(s):
+            if k not in SOURCE_BASE_KEYS:
+                del s[k]
+        s["kind"] = kind
+    rec_as_other = _mutate(receipt, lambda r: _relabel(r, 1, "other"))
+    check_has("committed record relabelled 'other' -> SOURCE_KIND_MISMATCH",
+              validate_warrant_receipt(snap, rec_as_other, cas),
+              "SOURCE_KIND_MISMATCH")
+    blob_as_genesis = _mutate(receipt, lambda r: _relabel(r, 0, "genesis"))
+    check_has("blob relabelled 'genesis' -> SOURCE_KIND_MISMATCH",
+              validate_warrant_receipt(snap, blob_as_genesis, cas),
+              "SOURCE_KIND_MISMATCH")
+    wid_lie = _mutate(receipt, lambda r: r["core"]["sources"][1].update(
+        claimed_wid="b" * 64, id_sound=False))
+    check_has("claimed_wid not derived from the filename -> CLAIMED_WID_NOT_PATH",
+              validate_warrant_receipt(snap, wid_lie, cas), "CLAIMED_WID_NOT_PATH")
 
     # --- grade-aware severity + settlement at base
     setl = [{"jurisdiction": "a" * 64, "active": True,

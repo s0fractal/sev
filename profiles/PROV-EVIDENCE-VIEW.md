@@ -382,7 +382,8 @@ the hash, not the host — and not this graph either."
   "sources_projected": 12,
   "sources_excluded": 2,
   "exclusions": [ { "path": "…", "entry_digest": "<hex64>",
-                    "issues": [ {"code": "…", "severity": "ERR"} ] } ],
+                    "projection_reason": "ERR_ISSUES | NOT_LOADED | ID_UNSOUND",
+                    "issues": [ {"code": "…", "severity": "ERR", "at": {"…"}} ] } ],
   "unverified_reasons": 0,
   "graph_digest": "<hex64>",
   "loss_manifest_digest": "<hex64>",
@@ -396,6 +397,31 @@ the hash, not the host — and not this graph either."
 source (malformed inputs included — they have paths and entry digests even
 when no `wid` exists). Silent truncation is the recurring bug class of this
 stack's own gates; the manifest makes it structurally loud.
+
+Three rules the projector MVP had to learn the hard way, each from a
+reproduced countervector:
+
+- **Exclusion issues are carried verbatim and detached.** The receipt's
+  ordered multiset is copied byte-for-byte (locators, severities and
+  `occurrence` ordinals intact — collapsing to a set of codes merged two
+  distinct occurrences into one row), and it is **deep-copied at emission**:
+  an issued manifest must not change when its input receipt is later
+  mutated. The projector's own reason for skipping a source lives in a
+  separate `projection_reason` field and is never merged into the receipt's
+  findings — one is a judgement by the verifier, the other a decision by the
+  projector.
+- **Every projected source is actually in the graph.** Non-record members
+  (`blob`, `genesis`, `other`) emit a generic `prov:Entity` carrying
+  `sev:sourceKind` and `sev:entryDigest`. Counting a member as projected
+  while emitting nothing for it is the same silent-truncation class on the
+  other branch of the union.
+- **A source's role is derived, never reported.** `kind` and a record's
+  `claimed_wid` follow from the store layout under the descriptor prefix
+  (`records/<hex64>.json`, `blobs/*`, `genesis.json`, else `other`); a
+  receipt that disagrees produces `SOURCE_KIND_MISMATCH` or
+  `CLAIMED_WID_NOT_PATH` and no graph. Otherwise a receipt could relabel a
+  committed Warrant record as `other` and make it disappear from the
+  evidence view while the manifest still called it projected.
 
 ## 10. Conformance
 

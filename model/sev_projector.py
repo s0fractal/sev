@@ -158,10 +158,14 @@ def project(snapshot, receipt, cas) -> tuple:
         occurrences became one row) and contradicted the profile, which
         requires structured issues[] (re-gate P1-2). The projector's own
         reason for skipping is a separate field, never merged into them."""
+        # Deep copy: keeping the receipt's list by reference made the emitted
+        # manifest mutable through its input — a later edit to the receipt
+        # silently rewrote already-issued evidence. An evidence artifact must
+        # detach from its source at emission (re-gate P1-2).
         exclusions.append({"path": src["path"],
                            "entry_digest": src["entry_digest"],
                            "projection_reason": projection_reason,
-                           "issues": src["issues"]})
+                           "issues": json.loads(json.dumps(src["issues"]))})
 
     for src in core["sources"]:
         if any(x["severity"] == "ERR" for x in src["issues"]):
@@ -256,8 +260,12 @@ def project(snapshot, receipt, cas) -> tuple:
 
 # ------------------------------------------------------------------ fixture
 
-def fixture():
-    """An id-sound, ERR-free end-to-end triple (snapshot, receipt, cas)."""
+def fixture(extra_files=None):
+    """An id-sound, ERR-free end-to-end triple (snapshot, receipt, cas).
+
+    `extra_files` adds further universe members (paths under the prefix); the
+    receipt reports each with the kind the store layout implies.
+    """
     reason_obj = {"kind": "check", "runtime": "ski@v1", "check": "a" * 64,
                   "verdict": "pass", "transcript": "b" * 64}
     body = {"warrant": "0.2", "decision": "accept", "subject": {},
@@ -269,6 +277,7 @@ def fixture():
     record_bytes = sm.jcs(record)
     files = {".warrants/records/%s.json" % wid: record_bytes,
              ".warrants/blobs/p": b"policy"}
+    files.update(extra_files or {})
     cas = {sm.sha256_hex(v): v for v in files.values()}
     uni = sm.seal_universe(files)
     contract = {"name": "warrant", "version": "0.4",
@@ -290,7 +299,10 @@ def fixture():
                                   "observed_verdict": "pass",
                                   "observed_result": "e" * 64, "atp_spent": 7,
                                   "failure_code": None}}]},
-    ], key=lambda s: (sm.path_sort_key(s["path"]), s["entry_digest"]))
+    ] + [{"kind": sm.classify_warrant_source(p, ".warrants/")[0], "path": p,
+          "entry_digest": by_path[p], "loaded": True, "issues": []}
+         for p in sorted(extra_files or {})],
+        key=lambda s: (sm.path_sort_key(s["path"]), s["entry_digest"]))
     core = {"subroot_descriptor_digest": sm.subroot_descriptor_digest(d),
             "grade": "base", "trust_config_digest": None,
             "execution_policy": {"runtimes": [
@@ -397,8 +409,10 @@ def run_vectors():
 
     # round-6 PR review, P1-2: honest negative receipt -> truthful manifest
     def _negative(r):
+        # An honest id-unsound record: the filename's claim stands (it must,
+        # the classifier derives it) while the body canonicalizes elsewhere.
         src = r["core"]["sources"][1]
-        src.update(claimed_wid=None, id_sound=False,
+        src.update(computed_wid="b" * 64, id_sound=False,
                    issues=[{"code": "ID_UNSOUND", "severity": "ERR",
                             "at": {"kind": "path", "value": src["path"]}}])
         r["core"].update(ok=False, errors=1)
@@ -437,7 +451,7 @@ def run_vectors():
     def _two_occurrences(r):
         src = r["core"]["sources"][1]
         at = {"kind": "path", "value": src["path"]}
-        src.update(claimed_wid=None, id_sound=False, issues=[
+        src.update(computed_wid="b" * 64, id_sound=False, issues=[
             {"code": "ID_UNSOUND", "severity": "ERR", "at": dict(at, occurrence=0)},
             {"code": "ID_UNSOUND", "severity": "ERR", "at": dict(at, occurrence=1)}])
         r["core"].update(ok=False, errors=2)
@@ -451,15 +465,15 @@ def run_vectors():
     # re-gate P1-3: non-record sources are actually projected, not just counted
     sm.check_true("blob/genesis/other emit a source entity",
                   lambda: b"sourceKind" in nq)
-    snap6, receipt6, cas6 = fixture()
-    other = dict(receipt6["core"]["sources"][0], kind="other")
-    receipt6["core"]["sources"][0] = other
+    # a genuine "other" member (not a relabelling — the classifier derives it)
+    snap6, receipt6, cas6 = fixture(extra_files={".warrants/README": b"hi"})
     res6, f6 = project(snap6, receipt6, cas6)
     vm6 = res6["view_manifest"]
+    other_digest = sm.sha256_hex(b"hi")
     sm.check_true("kind:other is projected, and the count says so honestly",
-                  lambda: f6 == [] and vm6["sources_projected"] == 2
+                  lambda: f6 == [] and vm6["sources_projected"] == 3
                   and vm6["sources_excluded"] == 0
-                  and other["entry_digest"].encode() in res6["nquads"])
+                  and other_digest.encode() in res6["nquads"])
 
     # re-gate P1-1: undeclared runtime cannot earn a matched verdict
     snap7, receipt7, cas7 = fixture()
@@ -503,6 +517,31 @@ def run_vectors():
     sm.check_true("fully committed undeclared runtime -> refusal, no graph",
                   lambda: res7 is None
                   and any(x["code"] == "RUNTIME_NOT_DECLARED" for x in f7))
+
+    # re-gate P1-2: emitted evidence must detach from its input
+    snap8, receipt8, cas8 = fixture()
+    _negative(receipt8)
+    res8, _f8 = project(snap8, receipt8, cas8)
+    before = json.dumps(res8["view_manifest"], sort_keys=True)
+    receipt8["core"]["sources"][1]["issues"][0]["code"] = "MUTATED_AFTER_EMISSION"
+    receipt8["core"]["sources"][1]["issues"].append(
+        {"code": "APPENDED", "severity": "ERR",
+         "at": {"kind": "global", "value": "store"}})
+    sm.check_equal("manifest is immune to post-projection input mutation",
+                   json.dumps(res8["view_manifest"], sort_keys=True), before)
+
+    # re-gate P1-1: source-role confusion is refused by the composed verdict
+    def _strip_to_base(src, kind):
+        for k in list(src):
+            if k not in sm.SOURCE_BASE_KEYS:
+                del src[k]
+        src["kind"] = kind
+    snap9, receipt9, cas9 = fixture()
+    _strip_to_base(receipt9["core"]["sources"][1], "other")
+    res9, f9 = project(snap9, receipt9, cas9)
+    sm.check_true("record relabelled 'other' -> refusal, no generic entity",
+                  lambda: res9 is None
+                  and any(x["code"] == "SOURCE_KIND_MISMATCH" for x in f9))
 
     # re-gate P2-1: the empty-corpus guard needs its own negative control
     code_guard = (
