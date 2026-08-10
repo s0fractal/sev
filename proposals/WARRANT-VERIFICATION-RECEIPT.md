@@ -6,7 +6,7 @@
 > a normative copy and instead pins the Warrant artifact/version/digest, and
 > this document remains here as provenance, marked superseded.
 
-**Status:** PROPOSAL SKETCH **rev 14** (2026-08-10), design-only, not filed.
+**Status:** PROPOSAL SKETCH **rev 15** (2026-08-10), design-only, not filed.
 Rev 5 (fifth Codex review, AMEND — compositional layer): the public verdict
 is now **`validate_warrant_receipt(snapshot, receipt, cas)`** in the model —
 descriptor lookup by digest, semantic role check (incl. non-null
@@ -205,6 +205,17 @@ JCS-canonical I-JSON per warrant SPEC §4; closed schemas; one type tag.
 - ▲ **`global_issues[]`** carries store- and settlement-level problems that
   belong to no single source file (invalid threshold policy, unverified
   genesis, missing jurisdiction root).
+- ▲ **A source's issues are local to that source (rev 15).** In
+  `sources[].issues[]` a `path` locator MUST equal that source's own path,
+  `json-pointer` and `byte-range` are relative to it, and the `global` kind
+  is not permitted — store-wide subjects belong in `global_issues[]`, where
+  they are attached to no member. Findings: `ISSUE_OUT_OF_SCOPE`,
+  `GLOBAL_ISSUE_ON_SOURCE`. Without the rule, exclusion keys on "any ERR on
+  this source" and an ERR *about another file* silently erased a healthy
+  record while `exclusions[]` paired its path with a foreign coordinate.
+  Note the ordering lesson: fixing the acknowledgement join was necessary
+  and not sufficient, because acknowledgement and exclusion are two
+  different consumers of the same list.
 - ▲ **`loaded` is derived, never chosen (rev 14).** It means exactly: the
   consumer obtained that member's bytes and their digest matched. Parse and
   schema failures are *issues*, not un-loadedness. Treating the producer's

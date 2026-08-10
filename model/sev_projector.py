@@ -2194,6 +2194,38 @@ def run_vectors():
                   lambda: resD is None and any(
                       x["code"] == "UNREADABLE_WITH_IDENTITY_CLAIM" for x in fD))
 
+    # round 12: a source's issues are local to it. Fixing the
+    # acknowledgement join was not enough — exclusion keys on "any ERR
+    # here", so a misdirected ERR still erased a healthy record.
+    snS1, rcS1, csS1 = _envelope_record()            # a SOUND envelope
+    recS1 = [x for x in rcS1["core"]["sources"] if x["kind"] == "record"][0]
+    recS1["issues"] = [{"code": "MALFORMED_ENVELOPE", "severity": "ERR",
+                        "at": {"kind": "path",
+                               "value": ".warrants/blobs/p"}}]
+    rcS1["core"].update(ok=False, errors=1)
+    resS1, fS1 = project(snS1, rcS1, csS1)
+    sm.check_true("a misdirected ERR cannot erase a healthy record",
+                  lambda: resS1 is None and any(
+                      x["code"] == "ISSUE_OUT_OF_SCOPE" for x in fS1))
+
+    snS2, rcS2, csS2 = _envelope_record()
+    recS2 = [x for x in rcS2["core"]["sources"] if x["kind"] == "record"][0]
+    recS2["issues"] = [{"code": "SOMETHING", "severity": "ERR",
+                        "at": {"kind": "global", "value": "store"}}]
+    rcS2["core"].update(ok=False, errors=1)
+    resS2, fS2 = project(snS2, rcS2, csS2)
+    sm.check_true("a store-wide subject may not be attached to a source",
+                  lambda: resS2 is None and any(
+                      x["code"] == "GLOBAL_ISSUE_ON_SOURCE" for x in fS2))
+
+    # ...while a correctly scoped issue still works, in both locator forms
+    snS3, rcS3, csS3 = _envelope_record(extra={"attacker_extra": 1},
+                                        ack="MALFORMED_ENVELOPE")
+    resS3, fS3 = project(snS3, rcS3, csS3)
+    sm.check_equal("a locally scoped path issue is still valid", fS3, [])
+    sm.check_true("...and a json-pointer issue into this record is too",
+                  lambda: project(*ski_fixture())[1] == [])
+
     # ...and the severity is part of the join too: an acknowledgement that
     # does not make the record fatal has not acknowledged anything
     snW, rcW, csW = _envelope_record(extra={"attacker_extra": 1},

@@ -682,6 +682,21 @@ def validate_receipt_core(core, descriptor=None, cas=None, view=None) -> list:
             _f(f, "BAD_LOADED", at + "/loaded")
             continue
         issues = _valid_issues(f, src["issues"], at + "/issues")
+        # A source's issues are LOCAL to that source. Without this, an ERR
+        # whose locator names another member still excluded THIS one: a
+        # healthy record vanished from the graph while `exclusions[]` paired
+        # its path with an issue about a different file (round 12). Fixing
+        # the acknowledgement join alone was not enough, because exclusion
+        # keys on "any ERR here", not on what the ERR is about.
+        for _i, _x in enumerate(issues):
+            _kind = _x["at"].get("kind")
+            _iat = "%s/issues/%d" % (at, _i)
+            if _kind == "path" and _x["at"].get("value") != src["path"]:
+                _f(f, "ISSUE_OUT_OF_SCOPE", _iat)
+            elif _kind == "global":
+                # store-wide subjects belong to global_issues[], where they
+                # are not attached to any member
+                _f(f, "GLOBAL_ISSUE_ON_SOURCE", _iat)
         all_issues.extend(issues)
         good_sources.append(src)
         err_here = any(x["severity"] == "ERR" for x in issues)
