@@ -2492,11 +2492,50 @@ def view_is_output_only():
         ("snapshot is a scalar", b"7", raw_r),
         ("lone surrogate", raw_s, raw_r[:-1] + b',"x":"\\ud800"}'),
     ]
+    # Byte-boundary refusals return before the deep validator ever runs, and
+    # they yield one finding each — so a corpus of only those tests almost
+    # nothing about view-independence where it matters, and cannot observe
+    # ORDER at all. These are structurally valid documents with semantic
+    # defects: they reach `_verdict_over_objects` and produce several
+    # findings apiece.
+    def _semantic(mutate):
+        obj = json.loads(raw_r.decode("utf-8"))
+        mutate(obj)
+        return jcs(obj)
+
+    def _break_counts(o):
+        o["core"]["errors"] = 99
+        o["core"]["warnings"] = 99
+
+    def _break_source(o):
+        src = [s for s in o["core"]["sources"] if s["kind"] == "record"][0]
+        src["id_sound"] = False
+        src["loaded"] = False
+
+    def _break_reason(o):
+        src = [s for s in o["core"]["sources"] if s.get("reasons")][0]
+        src["reasons"][0]["outcome"]["re_execution"] = "not-a-state"
+        src["reasons"][0]["runtime"] = "nowhere@v9"
+
+    def _break_all(o):
+        _break_counts(o)
+        _break_source(o)
+
+    for label, mutate in (("bad counts", _break_counts),
+                          ("unsound source", _break_source),
+                          ("bad reason", _break_reason),
+                          ("several at once", _break_all)):
+        corpus.append(("semantic: " + label, raw_s, _semantic(mutate)))
+    # Compared as JCS BYTES over the ordered finding list, not as a list of
+    # codes. A finding is `code`, `severity` and `at`, and comparing only the
+    # first would let ERR→WARN or one locator→another pass unnoticed — a
+    # guard covering less than it claims, which is the exact defect it exists
+    # to prevent (round 15 P1). Order is part of the verdict too, so the
+    # lists are not sorted before comparison.
     for label, s_raw, r_raw in corpus:
-        blind = [x["code"] for x in verify_receipt_bytes(s_raw, r_raw, cas)]
+        blind = jcs(verify_receipt_bytes(s_raw, r_raw, cas))
         sink = {}
-        seeing = [x["code"] for x in
-                  verify_receipt_bytes(s_raw, r_raw, cas, view=sink)]
+        seeing = jcs(verify_receipt_bytes(s_raw, r_raw, cas, view=sink))
         check_equal("verdict is view-independent: %s" % label, blind, seeing)
     # and the channel really does carry the body the mapping needs
     sink = {}

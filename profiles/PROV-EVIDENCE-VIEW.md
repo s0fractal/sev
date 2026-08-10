@@ -570,12 +570,16 @@ reproduced countervector:
   predicate real.
 
   **Target coverage vs MVP coverage are named, not conflated.** The shapes
-  file carries every target predicate — including ones the current MVP never
-  emits (`wasDerivedFrom`, `wasInvalidatedBy`, `qualifiedUsage`,
-  `qualifiedAssociation`, `hadPlan`, `actedOnBehalfOf`, `hadMember`) — and
-  separately declares `mvp_predicates`, the subset this projector can
-  produce. Vectors assert that the declared subset is genuinely a subset and
-  that the projector emits nothing outside it.
+  file carries every target predicate and separately declares
+  `mvp_predicates`, the subset this projector actually produces. **The
+  members of each set are deliberately not listed in this prose**: an
+  earlier revision named `qualifiedUsage` among the predicates the MVP
+  "never emits", and went on saying so after the §4.1 mapping began emitting
+  it — a duplicated list rots the moment the machine-readable one moves.
+  `conformance/prov-shapes.json` is the single source of truth. Vectors
+  assert the declared subset is genuinely a subset of the target set, that
+  the projector emits nothing outside it, **and** that nothing is declared
+  which no fixture emits — the honesty has to hold in both directions.
 
 - **PROV constrains both ends of a relation.** `prov:wasInformedBy` has an
   Activity **range** as well as domain, so pointing it at a Warrant record

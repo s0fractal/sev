@@ -242,6 +242,9 @@ def _project_validated(view, cas) -> tuple:
     g = Graph()
 
     emitted_kinds = set()
+    # what the committed bodies HELD, and what of it reached the graph;
+    # `not_emitted` is their difference, never a proxy for it
+    body_present, body_mapped = set(), set()
 
     # verification graph: the receipt itself, mechanically produced
     rnode = iri_receipt(core_digest)
@@ -336,6 +339,8 @@ def _project_validated(view, cas) -> tuple:
             emitted_kinds.add("body")
             actor = body.get("actor")
             if isinstance(actor, dict) and isinstance(actor.get("id"), str):
+                body_present.add("actor")
+                body_mapped.add("actor")
                 g.add(rec, WRT + "claimedActor", _lit(actor["id"]))
             if isinstance(body.get("decision"), str):
                 g.add(filing, WRT + "verdict", _lit(body["decision"]))
@@ -343,10 +348,16 @@ def _project_validated(view, cas) -> tuple:
                 g.add(filing, WRT + "declaredTimestamp", _lit(body["ts"]))
             for policy in body.get("under") or []:
                 if sm._is_hex64(policy):
+                    # the weak default IS emitted; the PLAN promotion is not,
+                    # which is why "policy-plan" stays a declared absence
+                    # while "actor"/"subject"/"evidence"/"prior" must not
+                    body_present.add("policy-plan")
                     g.add(rec, WRT + "underPolicy", _iri(iri_blob(policy)))
                     g.add(iri_blob(policy), RDF_TYPE, _iri(PROV + "Entity"))
             for prior in body.get("prior") or []:
                 if sm._is_hex64(prior):
+                    body_present.add("prior")
+                    body_mapped.add("prior")
                     # a prior is another RECORD, not a blob: keying it as a
                     # blob would make the lineage edge point at a content
                     # entity that no source in this bundle need contain
@@ -362,6 +373,8 @@ def _project_validated(view, cas) -> tuple:
                 if sm._is_hex64(ev):
                     uses.append(("evidence", ev))
             for role, digest in uses:
+                body_present.add(role)
+                body_mapped.add(role)
                 target = iri_blob(digest)
                 usage = iri_usage(filing, role, target)
                 g.add(target, RDF_TYPE, _iri(PROV + "Entity"))
@@ -546,8 +559,13 @@ def _project_validated(view, cas) -> tuple:
         not_emitted.add("unclaimed")
     if has_projected_issues:
         not_emitted.add("issue")
-    if "record" in emitted_kinds:      # a body exists, so its mapping is missing
-        not_emitted.update(("actor", "policy-plan", "subject", "evidence", "prior"))
+    # Derived from what was ACTUALLY emitted, per category. This block used
+    # to read "a record exists, therefore its mapping is missing" — true
+    # while §4.1 was unimplemented, and a direct contradiction of the graph
+    # afterwards: the manifest named actor, subject, evidence and prior
+    # un-emitted while the N-Quads carried all four. The presence of a record
+    # is not evidence about the mapping; only the mapping is.
+    not_emitted |= body_present - body_mapped
 
     sources = core["sources"]
     view_manifest = {
@@ -1401,12 +1419,12 @@ def run_vectors():
     # graph only because computed_wid == claimed_wid, so its body is exactly
     # what the WarrantID commits to.
     shared, other, ancestor = "1" * 64, "2" * 64, "3" * 64
-    snapB, receiptB, casB = ski_fixture(body_extra={
+    snap_body, receipt_body, cas_body = ski_fixture(body_extra={
         "subject": {"hash": shared}, "evidence": [shared, other],
         "prior": [ancestor], "under": ["b" * 64]})
-    resB, fB = _project_objects(snapB, receiptB, casB)
-    sm.check_equal("a body-bearing fixture projects", fB, [])
-    quads = resB["nquads"].decode()
+    res_body, f_body = _project_objects(snap_body, receipt_body, cas_body)
+    sm.check_equal("a body-bearing fixture projects", f_body, [])
+    quads = res_body["nquads"].decode()
 
     def _triples(subject):
         return [ln for ln in quads.splitlines() if ln.startswith("<%s> " % subject)]
@@ -1449,9 +1467,36 @@ def run_vectors():
                       "prov#Association", "prov#wasAssociatedWith")))
     sm.check_true("...and that restraint is declared as L-NOPROMOTE",
                   lambda: "L-NOPROMOTE" in
-                  [e["code"] for e in resB["loss_manifest"]["entries"]])
+                  [e["code"] for e in res_body["loss_manifest"]["entries"]])
+    # The manifest must never contradict the bytes it ships with. A category
+    # is listed un-emitted ONLY if its marker is genuinely absent from the
+    # graph — checked against the N-Quads themselves rather than against the
+    # code's intentions, because the previous version derived "the mapping is
+    # missing" from "a record exists" and kept saying it after the mapping
+    # landed (round 15 P1).
+    _MARKERS = {"actor": "wrt#claimedActor",
+                "subject": '<https://s0fractal.dev/ns/sev#role> "subject"',
+                "evidence": '<https://s0fractal.dev/ns/sev#role> "evidence"',
+                "prior": "wrt#prior",
+                "policy-plan": "prov#hadPlan",
+                "signature": "wrt#Signature",
+                "attribution": "prov#wasAttributedTo",
+                "settlement": "wrt#SettlementStatus"}
+
+    def _coverage_lies(res):
+        quads = res["nquads"].decode()
+        return sorted(c for c in res["view_manifest"]["coverage"]["not_emitted"]
+                      if c in _MARKERS and _MARKERS[c] in quads)
+
+    sm.check_equal("coverage never calls an emitted fact un-emitted",
+                   _coverage_lies(res_body), [])
+    sm.check_true("...while still declaring what is genuinely missing",
+                  lambda: "policy-plan" in
+                  res_body["view_manifest"]["coverage"]["not_emitted"])
+    sm.check_equal("...and the same holds for the default fixture",
+                   _coverage_lies(result), [])
     # (type closure over this graph is asserted below, where the guard is
-    # defined — the mapped fixture is carried down to it as `resB`)
+    # defined — the mapped fixture is carried down to it as `res_body`)
     # a body with none of these fields must not invent empty structure
     snapE, receiptE, casE = ski_fixture(body_extra={
         "subject": {"hash": "a" * 64}, "evidence": [], "prior": []})
@@ -2165,7 +2210,7 @@ def run_vectors():
     # a list is vacuously false -- the assertion would have "failed" on a
     # perfectly clean graph, which is how it was caught
     sm.check_equal("the §4.1 mapped graph passes type closure",
-                   sorted(_prov_violations(resB["nquads"])), [])
+                   sorted(_prov_violations(res_body["nquads"])), [])
     _bad_domain = (
         b'<urn:wrt:record:b> <http://www.w3.org/ns/prov#used> '
         b'<urn:wrt:blob:c> .\n')
@@ -3046,6 +3091,17 @@ def run_vectors():
                       if terms[1][0].startswith("http://www.w3.org/ns/prov#")}
     sm.check_equal("what the projector actually emits matches that declaration",
                    sorted(_emitted_preds - set(SHAPES["mvp_predicates"])), [])
+    # ...and the other direction, which was missing: declaring a predicate no
+    # fixture emits is over-declaration, the mirror of emitting an undeclared
+    # one. The union is taken over fixtures chosen to reach every branch that
+    # emits a PROV predicate, so "declared" cannot quietly outgrow "emitted".
+    _seen = set(_emitted_preds)
+    for _r in (res_body,):
+        _seen |= {ln.split(" ")[1][1:-1]
+                  for ln in _r["nquads"].decode().splitlines()
+                  if ln.split(" ")[1].startswith("<http://www.w3.org/ns/prov#")}
+    sm.check_equal("every declared MVP predicate is actually emitted somewhere",
+                   sorted(set(SHAPES["mvp_predicates"]) - _seen), [])
 
     # PROV-O's own normative wasAssociatedWith example: the agent is typed
     # Person, Agent AND Entity. A guard that rejects every multi-kind node

@@ -60,3 +60,5 @@ round without a SHA is invalid.
 | 14-fix | 2026-08-10 | Claude (author) | closure of round 14: 1 P1 + 5 P2 closed; **reviewer's P2-2 correction accepted and the author's "cannot represent" note withdrawn**; awaiting re-gate | `f92f7ee` → `author/live-warrant-adapter` |
 | 14-K | 2026-08-11 | Kimi | **APPROVE — PR #4 eligible for merge**; P1 fix verified on 4 corruption forms, all P2 closed | `f81aa72` (PR #4 head) |
 | — | 2026-08-11 | **Claude (author)** | **NOT A GATE** — §4.1 record-body mapping: `L-NOMAP` → `L-NOPROMOTE`; 2 existing vectors found coarse; view gains an output-only `body` channel | `ea185fc` → `author/body-mapping` |
+| 15 | 2026-08-11 | Kimi | AMEND — 2 P1: `coverage` contradicted the emitted graph; the frozen-boundary guard compared codes, not verdicts | `c9ff62a` (PR #5 head) |
+| 15-fix | 2026-08-11 | Claude (author) | closure of round 15: both P1 + the P2 closed; a second weakness in the view-guard corpus found and stated; awaiting exact-SHA re-gate | `c9ff62a` → `author/body-mapping` |
