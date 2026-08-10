@@ -2007,13 +2007,20 @@ def run_vectors():
     sm.check_equal("quad ordering is UTF-16 too",
                    lines, sorted(lines, key=sm.path_sort_key))
 
-    # the honesty sentence must not carry a hardcoded count that can rot
+    # The honesty sentence must not carry a hardcoded count that can rot.
+    # Scope is LIVE PROSE about the current state — README and CI. Round
+    # ledgers and review files legitimately state counts, because each is a
+    # dated claim bound to one SHA; scrubbing those would rewrite history
+    # rather than keep it honest.
     _root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
     _stale = []
     for rel in ("README.md", ".github/workflows/model.yml"):
         with open(os.path.join(_root, rel)) as fh:
             for i, line in enumerate(fh, 1):
-                if re.search(r"\b\d+\s+vectors?\b", line):
+                # \S* so hyphenated and prefixed forms cannot slip past:
+                # "56 self-vectors" survived the first cleanup precisely
+                # because the pattern demanded "vectors" immediately
+                if re.search(r"\b\d+\s+\S*vectors?\b", line):
                     _stale.append("%s:%d" % (rel, i))
     sm.check_equal("no hardcoded vector count can go stale in prose or CI",
                    _stale, [])

@@ -31,7 +31,7 @@ Sealed Ecosystem Bundle  (ecosystem.snapshot@v0)
 | [`spec/ECOSYSTEM-SNAPSHOT.md`](spec/ECOSYSTEM-SNAPSHOT.md) | `ecosystem.snapshot@v0` — neutral sealed bundle, domain-separated subroot descriptors, logical-path/CAS contract (rev 4) |
 | [`profiles/PROV-EVIDENCE-VIEW.md`](profiles/PROV-EVIDENCE-VIEW.md) | `sev@v0` — the projection profile, plus the running review ledger (5 adversarial rounds applied) |
 | [`proposals/WARRANT-VERIFICATION-RECEIPT.md`](proposals/WARRANT-VERIFICATION-RECEIPT.md) | `warrant.verification-receipt@v0` — **SEV-originated design candidate for Warrant; not a Warrant contract** (see Ownership below) |
-| [`model/snapshot_model.py`](model/snapshot_model.py) | Executable reference model: raw-byte strict parsers, total validators, composed receipt verdict, 56 self-vectors |
+| [`model/snapshot_model.py`](model/snapshot_model.py) | Executable reference model: raw-byte strict parsers, total validators, composed receipt verdict, self-vectors |
 | [`model/sev_projector.py`](model/sev_projector.py) | Projector MVP (round-6 R4): verified (snapshot, receipt) → canonical N-Quads + view-manifest + loss_manifest; Warrant quadrant only; refuses on any verdict finding |
 | [`conformance/`](conformance/) | Language-neutral fixtures (base64 bytes + expected codes) + replay harness — a second implementation consumes the JSON, not the Python |
 | [`reviews/`](reviews/) | Adversarial review rounds 1–6 with dispositions; rounds 1–5 predate the repo and are marked as reconstructed (see `reviews/README.md`); from round 6, a review without an exact SHA is invalid |
