@@ -6,7 +6,7 @@ Scope, deliberately narrow:
     verification receipt) pair that the composed verdict accepts cleanly;
   * emits canonical N-Quads (zero blank nodes, sorted, LF, trailing LF),
     a JCS view-manifest and a JCS loss_manifest;
-  * refuses (findings, no output) when validate_warrant_receipt reports
+  * refuses (findings, no output) when the byte verdict reports
     anything — a projection of an unverified pair is not an evidence view.
 
 What this is NOT yet: OAIP/BOS quadrants, BOS named-graph observer
@@ -170,6 +170,21 @@ def _tool_digest():
     return _file_digest("snapshot_model.py")
 
 
+def project_bytes(snapshot_raw, receipt_raw, cas) -> tuple:
+    """THE public projector: BYTES in.
+
+    Taking objects reopened the bypass the byte verdict exists to close —
+    a caller could `json.loads` bytes the format rejects, hand over the
+    resulting dict, and receive a graph. The product must not offer a door
+    the verdict closed (round 14).
+    """
+    view = {}
+    findings = sm.verify_receipt_bytes(snapshot_raw, receipt_raw, cas, view=view)
+    if findings:
+        return None, findings
+    return _project_validated(view, cas)
+
+
 def project(snapshot, receipt, cas) -> tuple:
     """(result dict | None, findings). Pure function of its inputs: no
     clocks, no randomness, no filesystem reads beyond the tool digest.
@@ -190,10 +205,12 @@ def project(snapshot, receipt, cas) -> tuple:
         findings = sm.verify_receipt_bytes(raw_s, raw_r, cas, view=view)
     if findings:
         return None, findings
-    # From here on the projector reads ONLY the validated view: the private
-    # frozen copies the verdict was actually rendered over. Reading the
-    # caller's receipt/snapshot again would reopen the verdict->assertion
-    # seam on the objects themselves (re-gate P1-1).
+    return _project_validated(view, cas)
+
+
+def _project_validated(view, cas) -> tuple:
+    """Both entry points converge here, reading ONLY the validated view —
+    the private frozen copies the verdict was rendered over."""
     committed_by_path = view.get("committed", {})
     snapshot = view["snapshot"]
     receipt = view["receipt"]
@@ -515,7 +532,7 @@ def fixture(extra_files=None, misfiled_as=None):
          "computed_wid": wid, "id_sound": filed_as == wid, "settlement": [],
          "signatures": [{"sig_digest": dg, "multiplicity": m, "actor": a,
                          "key": k, "valid": True, "binding": "unverified"}
-                        for dg, m, a, k in entries],
+                        for dg, m, a, k, _i in entries],
          "issues": ([] if filed_as == wid else
                     [{"code": "ID_UNSOUND", "severity": "ERR",
                       "at": {"kind": "path", "value": rec_path}}]),
@@ -569,8 +586,8 @@ def ski_fixture(extra_files=None, misfiled_as=None):
     reason_obj = {"kind": "check", "runtime": "ski@v1",
                   "check": sm.sha256_hex(check_bytes),
                   "verdict": "pass", "transcript": "b" * 64}
-    body = {"warrant": "0.2", "decision": "accept", "subject": {},
-            "under": [], "because": [reason_obj], "evidence": [],
+    body = {"warrant": "0.2", "decision": "accept", "subject": {"hash": "a" * 64},
+            "under": ["b" * 64], "because": [reason_obj], "evidence": [],
             "actor": {"id": "signer@example"}, "prior": [], "ts": 1}
     record = {"body": body,
               "sigs": [{"actor": "signer@example", "key": "c" * 64,
@@ -597,7 +614,7 @@ def ski_fixture(extra_files=None, misfiled_as=None):
          "id_sound": filed_as == wid, "settlement": [],
          "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
                          "key": k, "valid": True, "binding": "unverified"}
-                        for d, m, a, k in sm.envelope_signature_entries(record)[0]],
+                        for d, m, a, k, _i in sm.envelope_signature_entries(record)[0]],
          "issues": sorted(
              ([] if filed_as == wid else
                 [{"code": "ID_UNSOUND", "severity": "ERR",
@@ -788,7 +805,7 @@ def run_vectors():
     snap7, receipt7, cas7 = fixture()
     reason_obj = {"kind": "check", "runtime": "evil@v1", "check": "a" * 64,
                   "verdict": "pass", "transcript": "b" * 64}
-    body = {"warrant": "0.2", "decision": "accept", "subject": {}, "under": [],
+    body = {"warrant": "0.2", "decision": "accept", "subject": {"hash": "a" * 64}, "under": ["b" * 64],
             "because": [reason_obj], "evidence": [], "actor": {"id": "x"},
             "prior": [], "ts": 1}
     record = {"body": body,
@@ -854,8 +871,8 @@ def run_vectors():
     # re-gate P1-1: stale computed_wid over an edited body
     reason_obj = {"kind": "check", "runtime": "ski@v1", "check": "a" * 64,
                   "verdict": "pass", "transcript": "b" * 64}
-    body_v2 = {"warrant": "0.2", "decision": "accept", "subject": {},
-               "under": [], "because": [reason_obj], "evidence": [],
+    body_v2 = {"warrant": "0.2", "decision": "accept", "subject": {"hash": "a" * 64},
+               "under": ["b" * 64], "because": [reason_obj], "evidence": [],
                "actor": {"id": "x"}, "prior": [], "ts": 2}   # ts 1 -> 2
     rec_v2 = {"body": body_v2,
               "sigs": [{"actor": "x", "key": "c" * 64, "sig": "d" * 128}]}
@@ -906,8 +923,8 @@ def run_vectors():
                "verdict": "pass", "transcript": "b" * 64}
         if kind == "prose":
             rob = {"kind": "prose", "text": "because I say so"}
-        bod = {"warrant": body_version, "decision": "accept", "subject": {},
-               "under": [], "because": [rob], "evidence": [],
+        bod = {"warrant": body_version, "decision": "accept", "subject": {"hash": "a" * 64},
+               "under": ["b" * 64], "because": [rob], "evidence": [],
                "actor": {"id": "x"}, "prior": [], "ts": 1}
         recd = {"body": bod,
                 "sigs": [{"actor": "x", "key": "c" * 64, "sig": "d" * 128}]}
@@ -931,7 +948,7 @@ def run_vectors():
              "settlement": [],
              "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
                              "key": k, "valid": True, "binding": "unverified"}
-                            for d, m, a, k in sm.envelope_signature_entries(recd)[0]],
+                            for d, m, a, k, _i in sm.envelope_signature_entries(recd)[0]],
              "issues": [],
              "reasons": [{"ptr": "/because/0", "kind": rob["kind"],
                           "runtime": rob.get("runtime", runtime),
@@ -1040,7 +1057,7 @@ def run_vectors():
     # rebuild the record so its committed check names a blob nobody sealed
     ghost = {"kind": "check", "runtime": "ski@v1", "check": "a" * 64,
              "verdict": "pass", "transcript": "b" * 64}
-    bodyG = {"warrant": "0.2", "decision": "accept", "subject": {}, "under": [],
+    bodyG = {"warrant": "0.2", "decision": "accept", "subject": {"hash": "a" * 64}, "under": ["b" * 64],
              "because": [ghost], "evidence": [], "actor": {"id": "x"},
              "prior": [], "ts": 1}
     recG = {"body": bodyG,
@@ -1068,7 +1085,7 @@ def run_vectors():
              "id_sound": True, "settlement": [],
              "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
                              "key": k, "valid": True, "binding": "unverified"}
-                            for d, m, a, k in sm.envelope_signature_entries(recG)[0]],
+                            for d, m, a, k, _i in sm.envelope_signature_entries(recG)[0]],
              "issues": [],
              "reasons": [{"ptr": "/because/0", "kind": "check",
                           "runtime": "ski@v1",
@@ -1177,7 +1194,7 @@ def run_vectors():
         cb = sm.sha256_hex(b"policy")
         rob = {"kind": "check", "runtime": "ski@v1", "check": cb,
                "verdict": "pass", "transcript": "b" * 64}
-        bod = {"warrant": "0.2", "decision": "accept", "subject": {}, "under": [],
+        bod = {"warrant": "0.2", "decision": "accept", "subject": {"hash": "a" * 64}, "under": ["b" * 64],
                "because": [rob], "evidence": [], "actor": {"id": "x"},
                "prior": [], "ts": 1}
         recd = {"body": bod,
@@ -1214,7 +1231,7 @@ def run_vectors():
              "settlement": [],
              "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
                              "key": k, "valid": True, "binding": "unverified"}
-                            for d, m, a, k in sm.envelope_signature_entries(recd)[0]],
+                            for d, m, a, k, _i in sm.envelope_signature_entries(recd)[0]],
              "issues": [],
              "reasons": [{"ptr": "/because/0", "kind": "check", "runtime": "ski@v1",
                           "reason_digest": sm.sha256_hex(sm.jcs(rob)),
@@ -1507,7 +1524,7 @@ def run_vectors():
     check_obj = {"kind": "check", "runtime": "ski@v1",
                  "check": sm.sha256_hex(b"policy"), "verdict": "pass",
                  "transcript": "b" * 64}
-    bodyP = {"warrant": "0.2", "decision": "accept", "subject": {}, "under": [],
+    bodyP = {"warrant": "0.2", "decision": "accept", "subject": {"hash": "a" * 64}, "under": ["b" * 64],
              "because": [prose_reason, check_obj], "evidence": [],
              "actor": {"id": "signer@example"}, "prior": [], "ts": 1}
     recP = {"body": bodyP, "sigs": [{"actor": "signer@example", "key": "c" * 64,
@@ -1542,7 +1559,7 @@ def run_vectors():
                   "signatures": [{"sig_digest": d, "multiplicity": m,
                                   "actor": a, "key": k, "valid": True,
                                   "binding": "unverified"}
-                                 for d, m, a, k in
+                                 for d, m, a, k, _i in
                                  sm.envelope_signature_entries(recP)[0]],
                   "issues": [],
                   "reasons": [{"ptr": "/because/1", "kind": "check",
@@ -1568,8 +1585,8 @@ def run_vectors():
     # empty receipt an "exact bijection" with an empty derived set.
     def _with_committed(sigs=None, because=None):
         """Seal a record whose envelope/body carry the given raw shapes."""
-        body = {"warrant": "0.2", "decision": "accept", "subject": {},
-                "under": [],
+        body = {"warrant": "0.2", "decision": "accept", "subject": {"hash": "a" * 64},
+                "under": ["b" * 64],
                 "because": because if because is not None else [
                     {"kind": "check", "runtime": "ski@v1",
                      "check": sm.sha256_hex(b"policy"), "verdict": "pass",
@@ -1612,7 +1629,7 @@ def run_vectors():
              "settlement": [],
              "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
                              "key": k, "valid": True, "binding": "unverified"}
-                            for d, m, a, k in entries],
+                            for d, m, a, k, _i in entries],
              "issues": [], "reasons": reasons}],
             key=lambda s: (sm.path_sort_key(s["path"]), s["entry_digest"]))
         cr = {"subroot_descriptor_digest": sm.subroot_descriptor_digest(dd),
@@ -2142,7 +2159,7 @@ def run_vectors():
         """Seal a record whose bytes do not parse (or, for `spurious`, one
         that parses fine while the receipt claims it does not)."""
         raw = sm.jcs({"body": {"warrant": "0.2", "decision": "accept",
-                               "subject": {}, "under": [], "because": [],
+                               "subject": {"hash": "a" * 64}, "under": ["b" * 64], "because": [],
                                "evidence": [], "actor": {"id": "signer@example"},
                                "prior": [], "ts": 1},
                       "sigs": []}) if spurious else b"{"
@@ -2344,7 +2361,7 @@ def run_vectors():
 
     # ---- round 13 countervectors -------------------------------------
     def _record_fixture(env, sigs=None, issues=None, reasons=None,
-                        policy=None, warnings=0):
+                        policy=None, warnings=0, errors=0):
         """Seal one record envelope and build a receipt around it."""
         raw = _json.dumps(env, indent=2, sort_keys=True).encode() + b"\n"
         wid = sm.sha256_hex(sm.jcs(env["body"]))
@@ -2370,13 +2387,13 @@ def run_vectors():
                             [{"sig_digest": d, "multiplicity": m, "actor": a,
                               "key": k, "valid": True,
                               "binding": "unverified"}
-                             for d, m, a, k in entries]),
+                             for d, m, a, k, _i in entries]),
              "issues": issues or [], "reasons": reasons or []}],
             key=lambda x: (sm.path_sort_key(x["path"]), x["entry_digest"]))
         cr = {"subroot_descriptor_digest": sm.subroot_descriptor_digest(dd),
               "grade": "base", "trust_config_digest": None,
               "execution_policy": {"runtimes": policy or []},
-              "ok": True, "errors": 0, "warnings": warnings,
+              "ok": errors == 0, "errors": errors, "warnings": warnings,
               "global_issues": [], "sources": srcs}
         return sn, {"receipt": "warrant.verification-receipt@v0", "core": cr,
                     "producer": {"impl": "x", "artifact_digest": None,
@@ -2395,7 +2412,7 @@ def run_vectors():
         sigs = sorted([{"sig_digest": d, "multiplicity": m, "actor": a,
                         "key": k, "valid": i != bad,
                         "binding": "unverified"}
-                       for i, (d, m, a, k) in enumerate(entries)],
+                       for i, (d, m, a, k, _oi) in enumerate(entries)],
                       key=lambda x: (x["sig_digest"], x["multiplicity"]))
         issues = ([] if drop_issue else
                   [{"code": "INVALID_SIGNATURE", "severity": "WARN",
@@ -2491,6 +2508,120 @@ def run_vectors():
     sm.check_true("MISSING_BLOB over an available blob is refused",
                   lambda: resR is None and any(
                       x["code"] == "MISSING_BLOB_BUT_PRESENT" for x in fR))
+
+    # ---- round 14 countervectors -------------------------------------
+    # (1) the PRODUCT is byte-first too: objects cannot launder duplicates
+    _s_raw, _r_raw = sm.jcs(snap), sm.jcs(receipt)
+    sm.check_equal("project_bytes accepts the fixture bytes",
+                   project_bytes(_s_raw, _r_raw, cas)[1], [])
+    _dup = _r_raw[:-1] + b',"core":1}'
+    _rD, _fD = project_bytes(_s_raw, _dup, cas)
+    sm.check_true("a duplicate member cannot be projected",
+                  lambda: _rD is None
+                  and [x["code"] for x in _fD] == ["DUPLICATE_MEMBER"])
+    sm.check_true("...and the object door is private, not public",
+                  lambda: not hasattr(sm, "validate_warrant_receipt"))
+
+    # (2) an index-shifting malformed entry must not relabel a failure
+    def _shifted_sigs(reported):
+        env = _upstream_env()
+        env["sigs"] = [7, dict(env["sigs"][0], sig="e" * 128)]
+        entries = sm.envelope_signature_entries(env)[0]
+        sigs = [{"sig_digest": d, "multiplicity": m, "actor": a, "key": k,
+                 "valid": False, "binding": "unverified"}
+                for d, m, a, k, _i in entries]
+        issues = sorted([
+            {"code": "INVALID_SIGNATURE", "severity": "WARN",
+             "at": {"kind": "json-pointer", "value": "/sigs/%d" % reported}},
+            {"code": "MALFORMED_SIGNATURE", "severity": "ERR",
+             "at": {"kind": "json-pointer", "value": "/sigs/0"}},
+            {"code": "NO_VALID_ACTOR_SIGNATURE", "severity": "ERR",
+             "at": {"kind": "path",
+                    "value": ".warrants/records/%s.json"
+                             % sm.sha256_hex(sm.jcs(env["body"]))}}],
+            key=lambda x: sm.jcs(x))
+        rob = env["body"]["because"][0]
+        reasons = [{"ptr": "/because/0", "kind": "check",
+                    "runtime": rob["runtime"],
+                    "reason_digest": sm.sha256_hex(sm.jcs(rob)),
+                    "outcome": {"re_execution": "not-applicable",
+                                "claimed_verdict": rob["verdict"],
+                                "observed_verdict": None,
+                                "observed_result": None, "atp_spent": None,
+                                "failure_code": None}}]
+        return _record_fixture(env, sigs=sigs, issues=issues,
+                               reasons=reasons, warnings=1, errors=2)
+
+    _rI, _fI = project(*_shifted_sigs(reported=0))
+    sm.check_true("a malformed entry cannot shift a failure's index",
+                  lambda: _rI is None and any(
+                      x["code"] == "INVALID_SIG_UNREPORTED_AT" for x in _fI))
+    sm.check_equal("...while the true index /sigs/1 is accepted",
+                   project(*_shifted_sigs(reported=1))[1], [])
+
+    # (3) the body schema is the WHOLE schema
+    for label, mut, code in [
+            ("a subject without a hash",
+             lambda b: b.update(subject={}), "BAD_SUBJECT"),
+            ("an empty `under`", lambda b: b.update(under=[]), "BAD_UNDER"),
+            ("an actor without an id",
+             lambda b: b.update(actor={}), "BAD_ACTOR"),
+            ("a non-hex evidence entry",
+             lambda b: b.update(evidence=["nope"]), "BAD_EVIDENCE"),
+            ("a negative ts", lambda b: b.update(ts=-1), "BAD_TS"),
+            ("a reject with no reason",
+             lambda b: b.update(decision="reject", because=[]),
+             "DECISION_WITHOUT_REASON")]:
+        _rY, _fY = project(*_reasonless(mut))
+        sm.check_true("a record with %s is refused" % label,
+                      lambda _rY=_rY, _fY=_fY, code=code: _rY is None
+                      and any(x["code"] == code for x in _fY))
+    # ...and acknowledged, an invalid body is valid negative evidence
+    _snZ, _rcZ, _csZ = _reasonless(lambda b: b.update(subject={}))
+    _recZ = [x for x in _rcZ["core"]["sources"] if x["kind"] == "record"][0]
+    _recZ["issues"] = [{"code": "BODY_SCHEMA_INVALID", "severity": "ERR",
+                        "at": {"kind": "path", "value": _recZ["path"]}}]
+    _rcZ["core"].update(ok=False, errors=1)
+    _rZ, _fZ = project(_snZ, _rcZ, _csZ)
+    sm.check_equal("an acknowledged invalid body is valid evidence", _fZ, [])
+    sm.check_true("...and the record is excluded",
+                  lambda: _rZ["view_manifest"]["sources_excluded"] == 1)
+    _snZ2, _rcZ2, _csZ2 = _reasonless(lambda b: None)
+    _recZ2 = [x for x in _rcZ2["core"]["sources"] if x["kind"] == "record"][0]
+    _recZ2["issues"] = [{"code": "BODY_SCHEMA_INVALID", "severity": "ERR",
+                         "at": {"kind": "path", "value": _recZ2["path"]}}]
+    _rcZ2["core"].update(ok=False, errors=1)
+    _rZ2, _fZ2 = project(_snZ2, _rcZ2, _csZ2)
+    sm.check_true("claiming an invalid body over a sound one is refused",
+                  lambda: _rZ2 is None and any(
+                      x["code"] == "SPURIOUS_BODY_SCHEMA_INVALID" for x in _fZ2))
+
+    # (4) cmd@v1 cannot be "unverified" either
+    snU4, rcU4, csU4 = fixture()
+    srcU4 = [x for x in rcU4["core"]["sources"] if x["kind"] == "record"][0]
+    srcU4["reasons"][0]["outcome"].update(
+        re_execution="unverified", failure_code="ORACLE_UNAVAILABLE")
+    srcU4["issues"] = [{"code": "REASON_UNVERIFIED", "severity": "WARN",
+                        "at": {"kind": "json-pointer", "value": "/because/0"}}]
+    rcU4["core"].update(warnings=1)
+    resU4, fU4 = project(snU4, rcU4, csU4)
+    sm.check_true("cmd@v1 cannot be reported unverified either",
+                  lambda: resU4 is None and any(
+                      x["code"] == "NON_EXECUTABLE_RUNTIME_EXECUTED"
+                      for x in fU4))
+
+    # (5) a wrong sink must not be touched even on the raw refusal path
+    class HostileSink(dict):
+        def clear(self):
+            raise RuntimeError("caller code ran")
+
+        def update(self, *a, **k):
+            raise RuntimeError("caller code ran")
+
+    sm.check_equal("a hostile sink is refused before any parsing",
+                   [x["code"] for x in sm.verify_receipt_bytes(
+                       _s_raw, _dup, cas, view=HostileSink())],
+                   ["BAD_VIEW_SINK"])
 
     # the MVP inherits the core rule: no evidence resolver, no projection
     snNo, rcNo, _csNo = ski_fixture()

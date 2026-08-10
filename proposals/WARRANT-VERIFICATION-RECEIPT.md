@@ -8,7 +8,7 @@
 
 **Status:** PROPOSAL SKETCH **rev 16** (2026-08-10), design-only, not filed.
 Rev 5 (fifth Codex review, AMEND — compositional layer): the public verdict
-is now **`validate_warrant_receipt(snapshot, receipt, cas)`** in the model —
+is **`verify_receipt_bytes(snapshot_raw, receipt_raw, cas)`** in the model (rev 16; the object-taking form is internal) —
 descriptor lookup by digest, semantic role check (incl. non-null
 `spec_digest`) *inside* the composed verdict, **exact universe↔sources
 bijection** (an empty `sources[]` against a populated universe is a finding,

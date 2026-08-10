@@ -13,7 +13,7 @@ order and value domains open (round 5). v3 closes the round-5 order:
      structural damage;
   3. normative canonical ordering for EVERY array, strictly increasing;
   4. CAS coverage includes `unclaimed`;
-  5. one composed `validate_warrant_receipt(snapshot, receipt, cas)`;
+  5. one composed byte-first verdict, `verify_receipt_bytes`;
   6. exact universe<->sources bijection (silent truncation is a finding);
   7. per-occurrence status->issue joins (one issue cannot cover two
      mismatches);
@@ -56,6 +56,55 @@ RUNTIME_REGISTRY = {"0.1": {"cmd@v1"}, "0.2": {"cmd@v1", "ski@v1"}}
 BODY_KEYS = {"warrant", "decision", "subject", "under", "because", "evidence",
              "actor", "prior", "ts"}
 DECISIONS = {"propose", "accept", "reject", "supersede"}
+REASON_REQUIRING_DECISIONS = {"reject", "supersede"}
+
+
+def body_schema_findings(body) -> list:
+    """Every constraint warrant's body schema states, pinned here.
+
+    Checking a key set, a version and a `ts` type and calling that "the body
+    schema" was a claim wider than the check: `subject` shape, a non-empty
+    `under`, actor shape, hash arrays and `ts >= 0` were all unexamined, so
+    SEV accepted committed bytes Warrant's own validator rejects (round 14).
+    Mirrors `warrant/schemas/warrant-body.schema.json`.
+    """
+    bad = []
+    if not isinstance(body, dict):
+        return ["BODY_NOT_OBJECT"]
+    if set(body.keys()) != BODY_KEYS:
+        bad.append("BODY_SCHEMA_INVALID")
+    if body.get("warrant") not in RUNTIME_REGISTRY:
+        bad.append("UNKNOWN_BODY_VERSION")
+    if body.get("decision") not in DECISIONS:
+        bad.append("BAD_DECISION")
+    subject = body.get("subject")
+    if not (isinstance(subject, dict) and set(subject.keys()) <= {"hash", "note"}
+            and _is_hex64(subject.get("hash"))
+            and ("note" not in subject
+                 or (isinstance(subject["note"], str)
+                     and len(subject["note"]) <= 200))):
+        bad.append("BAD_SUBJECT")
+    under = body.get("under")
+    if not (isinstance(under, list) and under
+            and all(_is_hex64(u) for u in under)):
+        bad.append("BAD_UNDER")
+    actor = body.get("actor")
+    if not (isinstance(actor, dict) and set(actor.keys()) == {"id"}
+            and isinstance(actor.get("id"), str) and actor["id"]):
+        bad.append("BAD_ACTOR")
+    for field in ("evidence", "prior"):
+        val = body.get(field)
+        if not (isinstance(val, list) and all(_is_hex64(v) for v in val)):
+            bad.append("BAD_%s" % field.upper())
+    because = body.get("because")
+    if not isinstance(because, list):
+        bad.append("BAD_BECAUSE")
+    elif body.get("decision") in REASON_REQUIRING_DECISIONS and not because:
+        bad.append("DECISION_WITHOUT_REASON")
+    ts = body.get("ts")
+    if not (_is_safe_int(ts) and ts >= 0):
+        bad.append("BAD_TS")
+    return sorted(set(bad))
 GLOBAL_SUBJECTS = {"settlement", "store", "trust", "genesis"}
 SNAPSHOT_KEYS = {"snapshot", "bundle_root", "subroots", "unclaimed", "closed"}
 WRAPPER_KEYS = {"subroot", "protocol", "contract", "prefix", "universe", "digest"}
@@ -225,13 +274,17 @@ def parse_snapshot(raw, cas=None) -> tuple:
     return obj, f
 
 
-def parse_receipt(raw, snapshot=None, cas=None) -> tuple:
-    """Symmetric with parse_snapshot: bytes in, findings out. With a
-    snapshot supplied, runs the full composed verdict; without one, only the
-    byte boundary (a receipt cannot be semantically judged in isolation)."""
+def parse_receipt(raw, snapshot_raw=None, cas=None) -> tuple:
+    """Symmetric with parse_snapshot: BYTES in, findings out.
+
+    Both documents are bytes: taking a parsed snapshot here would reopen
+    exactly the object bypass `verify_receipt_bytes` exists to close, and
+    the old signature also still named a function that no longer exists
+    (round 14).
+    """
     obj, f = parse_strict(raw)
-    if obj is not None and not f and snapshot is not None:
-        f = validate_warrant_receipt(snapshot, obj, cas)
+    if obj is not None and not f and snapshot_raw is not None:
+        f = verify_receipt_bytes(snapshot_raw, raw, cas)
     return obj, f
 
 
@@ -605,7 +658,7 @@ def _join_issue(issues, code, severity, ptr):
 def validate_receipt_core(core, descriptor=None, cas=None, view=None) -> list:
     """Total over any parsed JSON value. Judges internal consistency and,
     when descriptor/cas are supplied by the composed verdict, byte-level
-    reason resolution. Public entry is validate_warrant_receipt()."""
+    reason resolution. Public entry is verify_receipt_bytes()."""
     f = []
     if not isinstance(core, dict):
         _f(f, "NOT_OBJECT", "/core")
@@ -763,19 +816,18 @@ def validate_receipt_core(core, descriptor=None, cas=None, view=None) -> list:
                 # only inside the reason loop meant a record with no checks —
                 # or with prose only — never had its declared format looked
                 # at at all (round 13).
-                _body = parsed.get("body")
-                if not isinstance(_body, dict):
-                    _f(f, "BODY_NOT_OBJECT", at)
-                else:
-                    _ver = _body.get("warrant")
-                    if _ver not in RUNTIME_REGISTRY:
-                        _f(f, "UNKNOWN_BODY_VERSION", at)
-                    if set(_body.keys()) != BODY_KEYS:
-                        _f(f, "BODY_SCHEMA_INVALID", at)
-                    if _body.get("decision") not in DECISIONS:
-                        _f(f, "BAD_DECISION", at)
-                    if not _is_safe_int(_body.get("ts")):
-                        _f(f, "BAD_TS", at)
+                _bad = body_schema_findings(parsed.get("body"))
+                if _bad:
+                    # derived body defects join with acknowledgement exactly
+                    # like a parse failure, so honestly-reported invalid
+                    # evidence can still be a valid receipt
+                    if _acknowledges(issues, "BODY_SCHEMA_INVALID", src["path"]):
+                        pass
+                    else:
+                        for _code in _bad:
+                            _f(f, _code, at)
+                elif _acknowledges(issues, "BODY_SCHEMA_INVALID", src["path"]):
+                    _f(f, "SPURIOUS_BODY_SCHEMA_INVALID", at)
             if parsed is not None and view is not None:
                 # the validated view: what the verdict was actually rendered
                 # over, handed to consumers so nothing re-reads the CAS and
@@ -867,8 +919,7 @@ def validate_receipt_core(core, descriptor=None, cas=None, view=None) -> list:
         # so a WARN at /sigs/0 covered a failure at /sigs/3 (round 13).
         env_index = {}
         if parsed is not None:
-            for _idx, (_d, _m, _a, _k) in enumerate(
-                    envelope_signature_entries(parsed)[0]):
+            for _d, _m, _a, _k, _idx in envelope_signature_entries(parsed)[0]:
                 env_index[(_d, _m)] = _idx
         sig_issues = [x for x in issues if x["code"] == "INVALID_SIGNATURE"
                       and x["severity"] == "WARN"]
@@ -947,6 +998,11 @@ def validate_receipt_core(core, descriptor=None, cas=None, view=None) -> list:
                     if not _join_issue(issues, "REASON_MISMATCH", "WARN", reason["ptr"]):
                         _f(f, "MISMATCH_WITHOUT_WARN", rat)
             elif re_ex == "unverified":
+                if rt in NORMATIVE_NOT_EXECUTED:
+                    # a runtime this verifier never runs cannot have failed
+                    # to run for a reason: `not-applicable` is its only
+                    # honest outcome (round 14)
+                    _f(f, "NON_EXECUTABLE_RUNTIME_EXECUTED", rat)
                 if any(v is not None for v in observed) or fc not in FAILURE_CODES:
                     _f(f, "OUTCOME_NOT_TOTAL", rat)
                     continue
@@ -1026,6 +1082,10 @@ def envelope_signature_entries(envelope):
     exactly and the dataset honestly claimed to hold no signature evidence.
     Malformed occurrences are now returned, and must be accounted for.
     """
+    # Entries carry their ORIGINAL envelope index. Numbering a filtered list
+    # made `/sigs/1` become `/sigs/0` whenever an earlier entry was
+    # malformed, so an acknowledgement pointing at the malformed slot
+    # legalised a different signature's failure (round 14).
     entries, malformed, seen = [], [], {}
     sigs = envelope.get("sigs") if isinstance(envelope, dict) else None
     if not isinstance(sigs, list):
@@ -1044,7 +1104,7 @@ def envelope_signature_entries(envelope):
             continue
         mult = seen.get(digest, 0)
         seen[digest] = mult + 1
-        entries.append((digest, mult, entry["actor"], entry["key"]))
+        entries.append((digest, mult, entry["actor"], entry["key"], i))
     return entries, malformed
 
 
@@ -1133,7 +1193,7 @@ def _expected_malformed_issues(envelope, expected_sigs, sig_malformed,
 
 def _bind_to_envelope(f, envelope, src, good_sigs, good_reasons, at, issues):
     expected_sigs, sig_malformed = envelope_signature_entries(envelope)
-    expected_keyed = {(d, m): (a, k) for d, m, a, k in expected_sigs}
+    expected_keyed = {(d, m): (a, k) for d, m, a, k, _i in expected_sigs}
     reported = {}
     for s in good_sigs:
         key = (s["sig_digest"], s["multiplicity"])
@@ -1444,6 +1504,11 @@ def verify_receipt_bytes(snapshot_raw, receipt_raw, cas, expected_version="0.4",
     having been shown them. So the bytes are the interface, and the object
     path below is internal (round 13).
     """
+    if view is not None and type(view) is not dict:
+        # before anything else, and never `isinstance`: a dict subclass can
+        # override .clear()/.update(), so touching a wrong sink on the
+        # refusal path executed caller code inside the verdict (round 14)
+        return [{"code": "BAD_VIEW_SINK", "severity": "ERR", "at": "/"}]
     findings = []
     snap, sf = parse_strict(snapshot_raw)
     for x in sf:
@@ -1452,7 +1517,7 @@ def verify_receipt_bytes(snapshot_raw, receipt_raw, cas, expected_version="0.4",
     for x in rf:
         findings.append({"code": x["code"], "severity": "ERR", "at": "/receipt"})
     if findings:
-        if isinstance(view, dict):
+        if view is not None:
             view.clear()
         return findings
     return _verdict_over_objects(snap, rec, cas, expected_version, view)
@@ -1719,8 +1784,8 @@ def signature_issues(entries):
     as not verifying. Fixture signatures here are synthetic placeholders, so
     claiming they verified would assert what this repo cannot back."""
     return [{"code": "INVALID_SIGNATURE", "severity": "WARN",
-             "at": {"kind": "json-pointer", "value": "/sigs/%d" % i}}
-            for i, _e in enumerate(entries)]
+             "at": {"kind": "json-pointer", "value": "/sigs/%d" % e[4]}}
+            for e in entries]
 
 
 def _fixture():
@@ -1732,8 +1797,8 @@ def _fixture():
     # body "warrant": "0.2" is the BODY-FORMAT version (ski@v1 era), while the
     # contract version "0.4" below is the SPEC document revision — warrant
     # versions bodies and the document independently (SPEC "Versioning").
-    record = {"body": {"warrant": "0.2", "decision": "accept", "subject": {},
-                       "under": [], "because": [reason_obj], "evidence": [],
+    record = {"body": {"warrant": "0.2", "decision": "accept", "subject": {"hash": "a" * 64},
+                       "under": ["b" * 64], "because": [reason_obj], "evidence": [],
                        "actor": {"id": "x"}, "prior": [], "ts": 1},
               "sigs": [{"actor": "x", "key": "c" * 64, "sig": "d" * 128}]}
     record_bytes = jcs(record)
@@ -1758,7 +1823,7 @@ def _fixture():
          # the receipt must account for every signature the envelope carries
          "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
                          "key": k, "valid": False, "binding": "unverified"}
-                        for d, m, a, k in envelope_signature_entries(record)[0]],
+                        for d, m, a, k, _i in envelope_signature_entries(record)[0]],
          "issues": sorted(
              [{"code": "ID_UNSOUND", "severity": "ERR",
                "at": {"kind": "path", "value": ".warrants/records/r.json"}},
@@ -1885,7 +1950,7 @@ def run_vectors():
     # round 13 (1): the public verdict takes BYTES; duplicate members cannot
     # be laundered by handing the validator an already-parsed object
     _raw_s, _raw_r = jcs(snap), jcs(receipt)
-    check_equal("the byte verdict accepts the fixture", 
+    check_equal("the byte verdict accepts the fixture",
                 verify_receipt_bytes(_raw_s, _raw_r, cas), [])
     check_equal("a duplicate member in the receipt bytes is refused",
                 [x["code"] for x in verify_receipt_bytes(
@@ -2111,7 +2176,7 @@ def run_vectors():
     reason2 = {"kind": "check", "runtime": "ski@v1",
                "check": sha256_hex(b"policy"), "verdict": "pass",
                "transcript": "b" * 64}
-    body2 = {"warrant": "0.2", "decision": "accept", "subject": {}, "under": [],
+    body2 = {"warrant": "0.2", "decision": "accept", "subject": {"hash": "a" * 64}, "under": ["b" * 64],
              "because": [reason2], "evidence": [], "actor": {"id": "x"},
              "prior": [], "ts": 2}                      # ts 1 -> 2
     rec2 = {"body": body2,
