@@ -56,3 +56,5 @@ round without a SHA is invalid.
 | 12 | 2026-08-10 | Codex | AMEND — 1 P1: exclusion bypassed the fixed join; source issues now scope-checked | `b21c3c3` |
 | 13 | 2026-08-10 | Codex | **APPROVE — receipt core only, eligible for freeze**; no P1 | `4e09d7d` (merged unchanged as `1fb82d6`) |
 | — | 2026-08-10 | **Claude (author)** | **NOT A GATE** — live-store adapter, 3 self-found P1 (2 adapter, 1 MVP projector); counts toward no freeze criterion | `d4a518d` + `author/live-warrant-adapter` |
+| 14 | 2026-08-10 | Kimi | AMEND — 1 P1: adapter crashes on the malformed evidence the frozen receipt core exists to represent; projector `L-NOISSUE` clean | `f92f7ee` (PR #4 head) |
+| 14-fix | 2026-08-10 | Claude (author) | closure of round 14: 1 P1 + 5 P2 closed; **reviewer's P2-2 correction accepted and the author's "cannot represent" note withdrawn**; awaiting re-gate | `f92f7ee` → `author/live-warrant-adapter` |

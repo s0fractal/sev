@@ -11,3 +11,9 @@ jobs:
         run: python3 model/sev_projector.py
       - name: conformance fixtures replay byte-identically
         run: python3 conformance/replay.py
+      # No Warrant store exists on a runner, so the live half prints SKIP and
+      # the pure-function half still gates: the classification table, the
+      # locator union, the fail-closed paths and the not-quieter invariant.
+      # A SKIP that says so is honest; leaving the adapter outside CI was not.
+      - name: live Warrant adapter selftest (live half SKIPs on a runner)
+        run: python3 model/warrant_adapter.py --selftest
