@@ -182,7 +182,12 @@ def project(snapshot, receipt, cas) -> tuple:
     # resolver hand the projector different bytes than the verdict judged
     # (re-gate P1-4) — the projector now touches no store at all.
     view = {}
-    findings = sm.validate_warrant_receipt(snapshot, receipt, cas, view=view)
+    try:
+        raw_s, raw_r = sm.jcs(snapshot), sm.jcs(receipt)
+    except (ValueError, RecursionError):
+        findings = sm._verdict_over_objects(snapshot, receipt, cas, view=view)
+    else:
+        findings = sm.verify_receipt_bytes(raw_s, raw_r, cas, view=view)
     if findings:
         return None, findings
     # From here on the projector reads ONLY the validated view: the private
@@ -1120,17 +1125,17 @@ def run_vectors():
 
     snapH, receiptH, casH = ski_fixture()
     revoked = RevokedAfterVerdict(casH)
-    real_validate = sm.validate_warrant_receipt
+    real_validate = sm.verify_receipt_bytes
 
     def _revoke_after(*a, **kw):
         out = real_validate(*a, **kw)
         revoked.revoked = True          # exactly at the verdict boundary
         return out
-    sm.validate_warrant_receipt = _revoke_after
+    sm.verify_receipt_bytes = _revoke_after
     try:
         resH, fH = project(snapH, receiptH, revoked)
     finally:
-        sm.validate_warrant_receipt = real_validate
+        sm.verify_receipt_bytes = real_validate
     baseline, _ = project(snapH, receiptH, casH)
     sm.check_equal("projection is byte-identical with the store revoked",
                    resH["nquads"], baseline["nquads"])
@@ -1143,7 +1148,7 @@ def run_vectors():
     snapI, receiptI, casI = ski_fixture()
     clean, _ = project(snapI, receiptI, casI)
     snapJ, receiptJ, casJ = ski_fixture()
-    real_validate2 = sm.validate_warrant_receipt
+    real_validate2 = sm.verify_receipt_bytes
 
     def _poison_after(*a, **kw):
         out = real_validate2(*a, **kw)
@@ -1153,11 +1158,11 @@ def run_vectors():
             "observed_result"] = "not-a-nodehash"
         snapJ["bundle_root"] = "0" * 64
         return out
-    sm.validate_warrant_receipt = _poison_after
+    sm.verify_receipt_bytes = _poison_after
     try:
         resJ, fJ = project(snapJ, receiptJ, casJ)
     finally:
-        sm.validate_warrant_receipt = real_validate2
+        sm.verify_receipt_bytes = real_validate2
     sm.check_equal("inputs poisoned at the verdict boundary cannot reach the graph",
                    resJ["nquads"], clean["nquads"])
     sm.check_equal("...nor the view manifest",
@@ -1315,7 +1320,7 @@ def run_vectors():
 
     snapN, receiptN, casN = ski_fixture()
     hostile = Uncopyable(receiptN)
-    real_validate3 = sm.validate_warrant_receipt
+    real_validate3 = sm.verify_receipt_bytes
 
     def _mutate_after(*a, **kw):
         out = real_validate3(*a, **kw)
@@ -1324,16 +1329,25 @@ def run_vectors():
         hostile["core"]["sources"][1]["reasons"][0]["outcome"][
             "observed_result"] = "not-a-nodehash"
         return out
-    sm.validate_warrant_receipt = _mutate_after
+    sm.verify_receipt_bytes = _mutate_after
     try:
         resN, fN = project(snapN, hostile, casN)
     finally:
-        sm.validate_warrant_receipt = real_validate3
-    sm.check_true("an uncopyable input is refused, not shared",
-                  lambda: resN is None
-                  and [x["code"] for x in fN] == ["INPUT_NOT_FREEZABLE"])
+        sm.verify_receipt_bytes = real_validate3
+    # round 13: the public verdict now takes BYTES, so a hostile caller
+    # object cannot reach the validator at all — the projector serializes
+    # first and detachment is structural rather than defended. The freeze
+    # still guards the internal object path, asserted right below and
+    # covered directly by the model suite.
+    clean_ref, _ = project(*ski_fixture())
+    sm.check_equal("a hostile caller object cannot poison the projection",
+                   resN["nquads"], clean_ref["nquads"])
     sm.check_true("nothing the validator never judged reached any output",
-                  lambda: resN is None)
+                  lambda: b"not-a-nodehash" not in resN["nquads"])
+    sm.check_equal("the internal object path still refuses it",
+                   [x["code"] for x in sm._verdict_over_objects(
+                       snapN, hostile, casN)],
+                   ["INPUT_NOT_FREEZABLE"])
 
     # exact-type freezing: subclasses are the usual carrier of read-dependent
     # behaviour, so they are refused even when they copy cleanly
@@ -1341,8 +1355,10 @@ def run_vectors():
         pass
     snapO, receiptO, casO = ski_fixture()
     resO, fO = project(snapO, PlainSubclass(receiptO), casO)
-    sm.check_equal("a dict subclass is refused too",
-                   [x["code"] for x in fO], ["INPUT_NOT_FREEZABLE"])
+    sm.check_equal("a dict subclass is refused on the object path",
+                   [x["code"] for x in sm._verdict_over_objects(
+                       snapO, PlainSubclass(receiptO), casO)],
+                   ["INPUT_NOT_FREEZABLE"])
     sm.check_true("...and the honest plain-dict path still projects",
                   lambda: project(snapO, receiptO, casO)[1] == [])
 
@@ -2325,6 +2341,156 @@ def run_vectors():
                     _stale.append("%s:%d" % (rel, i))
     sm.check_equal("no hardcoded vector count can go stale in prose or CI",
                    _stale, [])
+
+    # ---- round 13 countervectors -------------------------------------
+    def _record_fixture(env, sigs=None, issues=None, reasons=None,
+                        policy=None, warnings=0):
+        """Seal one record envelope and build a receipt around it."""
+        raw = _json.dumps(env, indent=2, sort_keys=True).encode() + b"\n"
+        wid = sm.sha256_hex(sm.jcs(env["body"]))
+        path = ".warrants/records/%s.json" % wid
+        files = {path: raw, ".warrants/blobs/p": b"policy"}
+        cs = {sm.sha256_hex(v): v for v in files.values()}
+        un = sm.seal_universe(files)
+        dd = sm.subroot_descriptor("warrant",
+                                   {"name": "warrant", "version": "0.4",
+                                    "spec_digest": sm.sha256_hex(b"spec")},
+                                   ".warrants/", un)
+        sn = sm.snapshot_object([dd], [])
+        bp = {e["path"]: e["sha256"] for e in un}
+        entries = sm.envelope_signature_entries(env)[0]
+        srcs = sorted([
+            {"kind": "blob", "path": ".warrants/blobs/p",
+             "entry_digest": bp[".warrants/blobs/p"], "loaded": True,
+             "issues": []},
+            {"kind": "record", "path": path, "entry_digest": bp[path],
+             "loaded": True, "claimed_wid": wid, "computed_wid": wid,
+             "id_sound": True, "settlement": [],
+             "signatures": (sigs if sigs is not None else
+                            [{"sig_digest": d, "multiplicity": m, "actor": a,
+                              "key": k, "valid": True,
+                              "binding": "unverified"}
+                             for d, m, a, k in entries]),
+             "issues": issues or [], "reasons": reasons or []}],
+            key=lambda x: (sm.path_sort_key(x["path"]), x["entry_digest"]))
+        cr = {"subroot_descriptor_digest": sm.subroot_descriptor_digest(dd),
+              "grade": "base", "trust_config_digest": None,
+              "execution_policy": {"runtimes": policy or []},
+              "ok": True, "errors": 0, "warnings": warnings,
+              "global_issues": [], "sources": srcs}
+        return sn, {"receipt": "warrant.verification-receipt@v0", "core": cr,
+                    "producer": {"impl": "x", "artifact_digest": None,
+                                 "spec": "0.4", "report_digest": "f" * 64,
+                                 "local_notes": []}}, cs
+
+    def _upstream_env():
+        return _json.loads(open(UPSTREAM_ACCEPT, "rb").read())
+
+    # (2) an INVALID_SIGNATURE must name the index that actually failed
+    def _two_sigs(bad, reported, drop_issue=False):
+        env = _upstream_env()
+        env["sigs"] = [dict(env["sigs"][0]),
+                       dict(env["sigs"][0], sig="e" * 128)]
+        entries = sm.envelope_signature_entries(env)[0]
+        sigs = sorted([{"sig_digest": d, "multiplicity": m, "actor": a,
+                        "key": k, "valid": i != bad,
+                        "binding": "unverified"}
+                       for i, (d, m, a, k) in enumerate(entries)],
+                      key=lambda x: (x["sig_digest"], x["multiplicity"]))
+        issues = ([] if drop_issue else
+                  [{"code": "INVALID_SIGNATURE", "severity": "WARN",
+                    "at": {"kind": "json-pointer",
+                           "value": "/sigs/%d" % reported}}])
+        # the record's committed reason must still be accounted for
+        rob = env["body"]["because"][0]
+        reasons = [{"ptr": "/because/0", "kind": "check",
+                    "runtime": rob["runtime"],
+                    "reason_digest": sm.sha256_hex(sm.jcs(rob)),
+                    "outcome": {"re_execution": "not-applicable",
+                                "claimed_verdict": rob["verdict"],
+                                "observed_verdict": None,
+                                "observed_result": None, "atp_spent": None,
+                                "failure_code": None}}]
+        return _record_fixture(env, sigs=sigs, issues=issues,
+                               reasons=reasons, warnings=len(issues))
+
+    sm.check_equal("a signature failure reported at its own index is valid",
+                   project(*_two_sigs(bad=1, reported=1))[1], [])
+    _rS, _fS = project(*_two_sigs(bad=1, reported=0))
+    sm.check_true("a failure at /sigs/1 reported at /sigs/0 is refused twice",
+                  lambda: _rS is None
+                  and any(x["code"] == "INVALID_SIG_UNREPORTED_AT" for x in _fS)
+                  and any(x["code"] == "INVALID_SIG_REPORTED_AT_SOUND"
+                          for x in _fS))
+    # each direction isolated on its own
+    _rS2, _fS2 = project(*_two_sigs(bad=1, reported=1, drop_issue=True))
+    sm.check_true("an unreported signature failure is refused",
+                  lambda: _rS2 is None and any(
+                      x["code"] == "INVALID_SIG_UNREPORTED_AT" for x in _fS2))
+    _rS3, _fS3 = project(*_two_sigs(bad=None, reported=0))
+    sm.check_true("a signature reported failed while sound is refused",
+                  lambda: _rS3 is None and any(
+                      x["code"] == "INVALID_SIG_REPORTED_AT_SOUND"
+                      for x in _fS3))
+
+    # (3) body version and schema are checked with NO check reasons present
+    def _reasonless(mutate):
+        env = _upstream_env()
+        env["body"]["because"] = []      # NO check reasons at all
+        mutate(env["body"])
+        return _record_fixture(env)
+
+    sm.check_equal("a reason-free record with a sound body is valid",
+                   project(*_reasonless(lambda b: None))[1], [])
+    for label, mut, code in [
+            ("an unknown body version", lambda b: b.update(warrant="9.9"),
+             "UNKNOWN_BODY_VERSION"),
+            ("an unknown body member", lambda b: b.update(smuggled=1),
+             "BODY_SCHEMA_INVALID"),
+            ("an unknown decision", lambda b: b.update(decision="maybe"),
+             "BAD_DECISION")]:
+        _rB, _fB = project(*_reasonless(mut))
+        sm.check_true("a reason-free record with %s is refused" % label,
+                      lambda _rB=_rB, _fB=_fB, code=code:
+                      _rB is None and any(x["code"] == code for x in _fB))
+
+    # (4) cmd@v1 is never declared and never reported as executed
+    snP, rcP, csP = fixture()
+    rcP["core"]["execution_policy"]["runtimes"] = [
+        {"runtime": "cmd@v1", "semantics": "container",
+         "semantics_digest": sm.sha256_hex(b"c"), "budget_unit": "atp",
+         "ceiling": 1}]
+    resP, fP = project(snP, rcP, csP)
+    sm.check_true("declaring cmd@v1 in an execution policy is refused",
+                  lambda: resP is None and any(
+                      x["code"] == "NON_EXECUTABLE_RUNTIME_DECLARED"
+                      for x in fP))
+    snQ, rcQ, csQ = fixture()
+    [x for x in rcQ["core"]["sources"]
+     if x["kind"] == "record"][0]["reasons"][0]["outcome"].update(
+        re_execution="matched", observed_verdict="pass",
+        observed_result="e" * 64, atp_spent=1)
+    resQ, fQ = project(snQ, rcQ, csQ)
+    sm.check_true("reporting a cmd@v1 re-execution is refused",
+                  lambda: resQ is None and any(
+                      x["code"] == "NON_EXECUTABLE_RUNTIME_EXECUTED"
+                      for x in fQ))
+
+    # (5) MISSING_BLOB is refutable when the committed check is available
+    snR, rcR, csR = ski_fixture()
+    srcR = [x for x in rcR["core"]["sources"] if x["kind"] == "record"][0]
+    srcR["reasons"][0]["outcome"].update(
+        re_execution="unverified", observed_verdict=None,
+        observed_result=None, atp_spent=None, failure_code="MISSING_BLOB")
+    srcR["issues"] = sorted(srcR["issues"] + [
+        {"code": "REASON_UNVERIFIED", "severity": "WARN",
+         "at": {"kind": "json-pointer", "value": "/because/0"}}],
+        key=lambda x: sm.jcs(x))
+    rcR["core"].update(warnings=rcR["core"]["warnings"] + 1)
+    resR, fR = project(snR, rcR, csR)
+    sm.check_true("MISSING_BLOB over an available blob is refused",
+                  lambda: resR is None and any(
+                      x["code"] == "MISSING_BLOB_BUT_PRESENT" for x in fR))
 
     # the MVP inherits the core rule: no evidence resolver, no projection
     snNo, rcNo, _csNo = ski_fixture()
