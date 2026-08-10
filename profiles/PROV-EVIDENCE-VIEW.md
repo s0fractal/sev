@@ -253,7 +253,7 @@ urn:wrt:record:<WID>  wrt:hasReason  urn:wrt:reason:<…> .
 urn:sigma:run:<…>  a sigma:CheckRun ;              # ⊑ prov:Activity
     prov:used urn:wrt:reason:<…> ;
     prov:used urn:wrt:blob:<check> ;               # ONLY when it actually ran
-    prov:wasInformedBy urn:wrt:record:<WID> ;
+    prov:used urn:wrt:record:<WID> ;              # the record it read the reason from
     sev:receiptCoreDigest "<hex64>" ;
     sigma:semanticsDigest "<hex64 from execution_policy>" ;
     sigma:reExecution "matched" | "mismatched" | "unverified" ;
@@ -528,6 +528,17 @@ reproduced countervector:
   `sev:sourceKind` and `sev:entryDigest`. Counting a member as projected
   while emitting nothing for it is the same silent-truncation class on the
   other branch of the union.
+- **PROV constrains both ends of a relation.** `prov:wasInformedBy` has an
+  Activity **range** as well as domain, so pointing it at a Warrant record
+  entailed that the record was an Activity. A run that consumed the record's
+  bytes says `prov:used` (Activity → Entity); `wasInformedBy` is reserved for
+  two genuine Activities. The conformance guard is therefore
+  predicate-specific and bidirectional — `used` (Activity→Entity),
+  `wasInformedBy` (Activity→Activity), `generated` (Activity→Entity),
+  `wasGeneratedBy` (Entity→Activity), `wasAssociatedWith` (Activity→Agent),
+  `specializationOf` (Entity→Entity) — and is itself unit-tested against
+  deliberately malformed graphs, because a healthy dataset gives its range
+  clause nothing to catch.
 - **An outcome where nothing ran is not an Activity.** Every reason gets an
   `sev:ExecutionAssessment` — an **Entity** recording what the receipt says
   about executing it (`sigma:reExecution`, `sigma:failureCode`,

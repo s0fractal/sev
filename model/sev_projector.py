@@ -328,7 +328,11 @@ def project(snapshot, receipt, cas) -> tuple:
                 g.add(run, SIGMA + "semanticsDigest", _lit(sem), vgraph)
             g.add(run, SEV + "receiptCoreDigest", _lit(core_digest), vgraph)
             g.add(run, SIGMA + "reExecution", _lit(o["re_execution"]), vgraph)
-            g.add(run, PROV + "wasInformedBy", _iri(rec), vgraph)
+            # the run consumed the record's bytes to reach the reason —
+            # prov:used (Activity -> Entity). NOT prov:wasInformedBy, whose
+            # RANGE is also an Activity: that entailed the Warrant record
+            # itself being an Activity (re-gate P1)
+            g.add(run, PROV + "used", _iri(rec), vgraph)
             g.add(run, SIGMA + "observedVerdict", _lit(o["observed_verdict"]), vgraph)
             g.add(run, SIGMA + "atpSpent", _lit(o["atp_spent"]), vgraph)
             if rt == "ski@v1":
@@ -1718,33 +1722,83 @@ def run_vectors():
     # independent entailment guard: PROV predicates whose domain is an
     # Activity may only have CheckRun subjects — checked by parsing the
     # output back, not by trusting the emitter
-    ACTIVITY_DOMAIN = ("prov#used", "prov#wasInformedBy", "prov#generated",
-                       "prov#wasAssociatedWith")
+    # Bidirectional and predicate-specific: PROV constrains both ends, and a
+    # domain-only guard passed a graph that entailed the Warrant record was
+    # an Activity (via prov:wasInformedBy, whose range is Activity too).
+    ACTIVITY_TYPES = ("sigma#CheckRun", "wrt#Filing")
+    #        predicate            subject     object
+    PROV_SIGNATURES = {
+        "prov#used":              ("activity", "entity"),
+        "prov#wasInformedBy":     ("activity", "activity"),
+        "prov#generated":         ("activity", "entity"),
+        "prov#wasGeneratedBy":    ("entity",   "activity"),
+        "prov#wasAssociatedWith": ("activity", "agent"),
+        "prov#specializationOf":  ("entity",   "entity"),
+    }
 
-    def _activity_subjects_are_runs(nquads):
-        runs, offenders = set(), set()
-        for line in nquads.decode().splitlines():
+    def _prov_violations(nquads):
+        lines = nquads.decode().splitlines()
+        activities = set()
+        for line in lines:
+            parts = line.split(" ")
+            if len(parts) >= 3 and "22-rdf-syntax-ns#type" in parts[1] \
+                    and any(a in parts[2] for a in ACTIVITY_TYPES):
+                activities.add(parts[0])
+        bad = set()
+        for line in lines:
             parts = line.split(" ")
             if len(parts) < 3:
                 continue
-            subj, pred = parts[0], parts[1]
-            if "22-rdf-syntax-ns#type" in pred and "sigma#CheckRun" in line:
-                runs.add(subj)
-        for line in nquads.decode().splitlines():
-            parts = line.split(" ")
-            if len(parts) < 3:
-                continue
-            subj, pred = parts[0], parts[1]
-            if any(a in pred for a in ACTIVITY_DOMAIN) and subj not in runs:
-                offenders.add((subj, pred))
-        return offenders
+            subj, pred, obj = parts[0], parts[1], parts[2]
+            for name, (want_s, want_o) in PROV_SIGNATURES.items():
+                if name not in pred:
+                    continue
+                # an Activity position REQUIRES an Activity type; an Entity
+                # position forbids one (untyped nodes are Entities)
+                if want_s == "activity" and subj not in activities:
+                    bad.add(("subject", name, subj))
+                if want_s == "entity" and subj in activities:
+                    bad.add(("subject", name, subj))
+                if obj.startswith("<"):
+                    if want_o == "activity" and obj not in activities:
+                        bad.add(("object", name, obj))
+                    if want_o == "entity" and obj in activities:
+                        bad.add(("object", name, obj))
+        return bad
+
+    # the guard itself is unit-tested: on a healthy graph the range clause
+    # has nothing to catch, so it would otherwise be vacuous
+    _bad_range = (
+        b'<urn:sigma:run:a> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> '
+        b'<https://s0fractal.dev/ns/sigma#CheckRun> .\n'
+        b'<urn:wrt:record:b> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> '
+        b'<https://s0fractal.dev/ns/wrt#Warrant> .\n'
+        b'<urn:sigma:run:a> <http://www.w3.org/ns/prov#wasInformedBy> '
+        b'<urn:wrt:record:b> .\n')
+    sm.check_true("guard catches an Activity-range violation",
+                  lambda: ("object", "prov#wasInformedBy", "<urn:wrt:record:b>")
+                  in _prov_violations(_bad_range))
+    _bad_domain = (
+        b'<urn:wrt:record:b> <http://www.w3.org/ns/prov#used> '
+        b'<urn:wrt:blob:c> .\n')
+    sm.check_true("guard catches an Activity-domain violation",
+                  lambda: any(v[0] == "subject" for v in
+                              _prov_violations(_bad_domain)))
+    _entity_position = (
+        b'<urn:sigma:run:a> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> '
+        b'<https://s0fractal.dev/ns/sigma#CheckRun> .\n'
+        b'<urn:sigma:run:a> <http://www.w3.org/ns/prov#used> '
+        b'<urn:sigma:run:a> .\n')
+    sm.check_true("guard catches an Activity standing in an Entity position",
+                  lambda: any(v[0] == "object" for v in
+                              _prov_violations(_entity_position)))
 
     for label, res_ in [("upstream not-applicable", resUP),
                         ("ski matched", result),
                         ("ski unverified", resM)]:
-        sm.check_equal("entailment guard (%s): no non-run in an Activity "
-                       "position" % label,
-                       _activity_subjects_are_runs(res_["nquads"]), set())
+        sm.check_equal("entailment guard (%s): every PROV domain AND range "
+                       "position is correctly typed" % label,
+                       _prov_violations(res_["nquads"]), set())
 
     # matched and mismatched DO produce a run, with its execution inputs
     sm.check_true("a matched ski@v1 outcome produces a CheckRun with prov:used",
