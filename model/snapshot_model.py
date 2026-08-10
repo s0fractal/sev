@@ -726,6 +726,15 @@ def validate_receipt_core(core, descriptor=None, cas=None) -> list:
                 if o["observed_verdict"] not in VERDICTS:
                     _f(f, "BAD_VERDICT", rat)
                     continue
+                # A re-execution result only means something under declared
+                # semantics: an undeclared runtime has no semantics_digest and
+                # no ceiling, so "matched" would grant authority to a runtime
+                # the verifier never claimed it could run (re-gate P1-1).
+                if rt not in runtimes:
+                    _f(f, "RUNTIME_NOT_DECLARED", rat)
+                    # deliberately not `continue`: the role-binding check
+                    # below must still run, so a swapped runtime reports both
+                    # what it lied about and what it was never licensed to do
                 if rt == "ski@v1" and not _is_hex64(o["observed_result"]):
                     _f(f, "BAD_RESULT_SHAPE", rat)
                 if not (_is_safe_int(o["atp_spent"]) and o["atp_spent"] >= 0):

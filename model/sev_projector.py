@@ -151,11 +151,17 @@ def project(snapshot, receipt, cas) -> tuple:
     unverified = 0
     exclusions = []
 
-    def _exclude(src, why):
+    def _exclude(src, projection_reason):
+        """Exclusions carry the receipt's issues VERBATIM — the exact ordered
+        multiset with locators, severities and occurrences. Collapsing them to
+        a set of codes destroyed evidence (two ID_UNSOUND at different
+        occurrences became one row) and contradicted the profile, which
+        requires structured issues[] (re-gate P1-2). The projector's own
+        reason for skipping is a separate field, never merged into them."""
         exclusions.append({"path": src["path"],
                            "entry_digest": src["entry_digest"],
-                           "codes": sorted({why} | {x["code"] for x in src["issues"]
-                                           if x["severity"] == "ERR"})})
+                           "projection_reason": projection_reason,
+                           "issues": src["issues"]})
 
     for src in core["sources"]:
         if any(x["severity"] == "ERR" for x in src["issues"]):
@@ -164,9 +170,15 @@ def project(snapshot, receipt, cas) -> tuple:
         if src["loaded"] is not True:
             _exclude(src, "NOT_LOADED")
             continue
-        if src["kind"] == "blob":
-            g.add(iri_blob(src["entry_digest"]), RDF_TYPE, _iri(PROV + "Entity"))
         if src["kind"] != "record":
+            # Every non-record universe member gets a generic source entity,
+            # so "projected" means projected. Rev 1 skipped genesis/other
+            # silently while counting them projected — the same
+            # silent-truncation class on the other union branch (P1-3).
+            node = iri_blob(src["entry_digest"])
+            g.add(node, RDF_TYPE, _iri(PROV + "Entity"))
+            g.add(node, SEV + "sourceKind", _lit(src["kind"]))
+            g.add(node, SEV + "entryDigest", _lit(src["entry_digest"]))
             continue
         if src["id_sound"] is not True:
             _exclude(src, "ID_UNSOUND")
@@ -401,14 +413,116 @@ def run_vectors():
                   and vm["sources_projected"] == 1
                   and vm["sources_projected"] + vm["sources_excluded"]
                   == vm["sources_in_receipts"]
-                  and "ID_UNSOUND" in vm["exclusions"][0]["codes"])
+                  and [x["code"] for x in vm["exclusions"][0]["issues"]]
+                  == ["ID_UNSOUND"])
     sm.check_true("excluded record has no graph node",
                   lambda: b"urn:wrt:record:" not in res4["nquads"])
 
-    # round-6 PR review, P2-2: graph digest tied to projector semantics
-    sm.check_true("profile_revision and projector_digest present, hex64",
-                  lambda: bool(sm.HEX64.match(vm["profile_revision"]))
-                  and bool(sm.HEX64.match(vm["projector_digest"])))
+    # re-gate P2-2: digests must EQUAL the real file bytes, not merely look
+    # like hex64 — a constant would have satisfied the old test
+    sm.check_equal("profile_revision equals the profile document's digest",
+                   vm["profile_revision"],
+                   _file_digest("..", "profiles", "PROV-EVIDENCE-VIEW.md"))
+    sm.check_equal("projector_digest equals this file's digest",
+                   vm["projector_digest"], _file_digest("sev_projector.py"))
+
+    # re-gate P1-2: exclusions carry the receipt's issues verbatim
+    exc = res4["view_manifest"]["exclusions"][0]
+    src_issues = receipt4["core"]["sources"][1]["issues"]
+    sm.check_equal("exclusion preserves the ordered issue multiset",
+                   exc["issues"], src_issues)
+    sm.check_equal("projection reason is separate from the issues",
+                   exc["projection_reason"], "ERR_ISSUES")
+
+    def _two_occurrences(r):
+        src = r["core"]["sources"][1]
+        at = {"kind": "path", "value": src["path"]}
+        src.update(claimed_wid=None, id_sound=False, issues=[
+            {"code": "ID_UNSOUND", "severity": "ERR", "at": dict(at, occurrence=0)},
+            {"code": "ID_UNSOUND", "severity": "ERR", "at": dict(at, occurrence=1)}])
+        r["core"].update(ok=False, errors=2)
+    snap5, receipt5, cas5 = fixture()
+    _two_occurrences(receipt5)
+    res5, f5 = project(snap5, receipt5, cas5)
+    sm.check_true("two same-code issues at distinct occurrences both survive",
+                  lambda: f5 == []
+                  and len(res5["view_manifest"]["exclusions"][0]["issues"]) == 2)
+
+    # re-gate P1-3: non-record sources are actually projected, not just counted
+    sm.check_true("blob/genesis/other emit a source entity",
+                  lambda: b"sourceKind" in nq)
+    snap6, receipt6, cas6 = fixture()
+    other = dict(receipt6["core"]["sources"][0], kind="other")
+    receipt6["core"]["sources"][0] = other
+    res6, f6 = project(snap6, receipt6, cas6)
+    vm6 = res6["view_manifest"]
+    sm.check_true("kind:other is projected, and the count says so honestly",
+                  lambda: f6 == [] and vm6["sources_projected"] == 2
+                  and vm6["sources_excluded"] == 0
+                  and other["entry_digest"].encode() in res6["nquads"])
+
+    # re-gate P1-1: undeclared runtime cannot earn a matched verdict
+    snap7, receipt7, cas7 = fixture()
+    reason_obj = {"kind": "check", "runtime": "evil@v1", "check": "a" * 64,
+                  "verdict": "pass", "transcript": "b" * 64}
+    body = {"warrant": "0.2", "decision": "accept", "subject": {}, "under": [],
+            "because": [reason_obj], "evidence": [], "actor": {"id": "x"},
+            "prior": [], "ts": 1}
+    record = {"body": body,
+              "sigs": [{"actor": "x", "key": "c" * 64, "sig": "d" * 128}]}
+    wid = sm.sha256_hex(sm.jcs(body))
+    files = {".warrants/records/%s.json" % wid: sm.jcs(record),
+             ".warrants/blobs/p": b"policy"}
+    cas7 = {sm.sha256_hex(v): v for v in files.values()}
+    uni = sm.seal_universe(files)
+    contract = {"name": "warrant", "version": "0.4",
+                "spec_digest": sm.sha256_hex(b"spec")}
+    d7 = sm.subroot_descriptor("warrant", contract, ".warrants/", uni)
+    snap7 = sm.snapshot_object([d7], [])
+    by_path = {e["path"]: e["sha256"] for e in uni}
+    rec_path = ".warrants/records/%s.json" % wid
+    receipt7["core"].update(
+        subroot_descriptor_digest=sm.subroot_descriptor_digest(d7),
+        sources=sorted([
+            {"kind": "blob", "path": ".warrants/blobs/p",
+             "entry_digest": by_path[".warrants/blobs/p"], "loaded": True,
+             "issues": []},
+            {"kind": "record", "path": rec_path, "entry_digest": by_path[rec_path],
+             "loaded": True, "claimed_wid": wid, "computed_wid": wid,
+             "id_sound": True, "settlement": [], "signatures": [], "issues": [],
+             "reasons": [{"ptr": "/because/0", "kind": "check",
+                          "runtime": "evil@v1",
+                          "reason_digest": sm.sha256_hex(sm.jcs(reason_obj)),
+                          "outcome": {"re_execution": "matched",
+                                      "claimed_verdict": "pass",
+                                      "observed_verdict": "pass",
+                                      "observed_result": "e" * 64,
+                                      "atp_spent": 7, "failure_code": None}}]},
+        ], key=lambda s: (sm.path_sort_key(s["path"]), s["entry_digest"])))
+    res7, f7 = project(snap7, receipt7, cas7)
+    sm.check_true("fully committed undeclared runtime -> refusal, no graph",
+                  lambda: res7 is None
+                  and any(x["code"] == "RUNTIME_NOT_DECLARED" for x in f7))
+
+    # re-gate P2-1: the empty-corpus guard needs its own negative control
+    code_guard = (
+        "import json, os, shutil, subprocess, sys, tempfile\n"
+        "here = os.path.abspath('.')\n"
+        "d = tempfile.mkdtemp()\n"
+        "shutil.copy(os.path.join(here, '..', 'conformance', 'replay.py'),\n"
+        "            os.path.join(d, 'replay.py'))\n"
+        "os.makedirs(os.path.join(d, '..', 'model'), exist_ok=True)\n"
+        "json.dump({'vectors': 'x', 'cases': []},\n"
+        "          open(os.path.join(d, 'parse-strict.vectors.json'), 'w'))\n"
+        "p = subprocess.run([sys.executable, os.path.join(d, 'replay.py')],\n"
+        "                   capture_output=True, text=True,\n"
+        "                   env=dict(os.environ, PYTHONPATH=os.path.join(here)))\n"
+        "sys.exit(0 if p.returncode == 1 and 'vacuous' in p.stdout else 1)\n")
+    proc_guard = subprocess.run([sys.executable, "-c", code_guard],
+                                cwd=os.path.dirname(os.path.abspath(__file__)),
+                                capture_output=True, text=True)
+    sm.check_equal("empty fixture corpus fails the replay harness (exit 1)",
+                   proc_guard.returncode, 0)
 
 
 def main():
