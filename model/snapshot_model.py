@@ -39,6 +39,7 @@ SUBROOT_DOMAIN = b"ecosystem-subroot-v0:"
 SNAPSHOT_DOMAIN = b"ecosystem-snapshot-v0:"
 ZERO64 = "0" * 64
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
+HEX128 = re.compile(r"^[0-9a-f]{128}$")
 PTR_RE = re.compile(r"^/because/(0|[1-9][0-9]*)$")
 SAFE_INT_MAX = 9007199254740991
 FAILURE_CODES = {"OVER_BUDGET", "MISSING_BLOB", "MALFORMED_CHECK",
@@ -821,7 +822,8 @@ def validate_receipt_core(core, descriptor=None, cas=None, view=None) -> list:
         # dataset-relative coverage would faithfully describe whatever the
         # receipt chose to disclose.
         if parsed is not None:
-            _bind_to_envelope(f, parsed, src, good_sigs, good_reasons, at)
+            _bind_to_envelope(f, parsed, src, good_sigs, good_reasons,
+                              at, issues)
 
     _ordered(f, good_sources, lambda s: (path_sort_key(s["path"]), s["entry_digest"]),
              "SOURCES_NOT_SORTED", "/core/sources")
@@ -837,42 +839,82 @@ def validate_receipt_core(core, descriptor=None, cas=None, view=None) -> list:
     return f
 
 
-def envelope_signature_entries(envelope) -> list:
-    """The signature multiset the committed envelope actually carries:
-    [(sig_digest, multiplicity, actor, key)] in envelope order. Multiplicity
-    disambiguates byte-identical duplicates, exactly as the receipt's own
-    identity rule does."""
-    out, seen = [], {}
+def _is_hex128(x) -> bool:
+    return isinstance(x, str) and bool(HEX128.match(x))
+
+
+def envelope_signature_entries(envelope):
+    """(entries, malformed_pointers) over the WHOLE committed `sigs[]`.
+
+    Returning only what parsed cleanly made the "exact bijection" a bijection
+    with a silently filtered subset: `{"sigs": [7]}` derived an empty
+    expected multiset, so a receipt reporting no signatures matched it
+    exactly and the dataset honestly claimed to hold no signature evidence.
+    Malformed occurrences are now returned, and must be accounted for.
+    """
+    entries, malformed, seen = [], [], {}
     sigs = envelope.get("sigs") if isinstance(envelope, dict) else None
     if not isinstance(sigs, list):
-        return out
-    for entry in sigs:
-        if not isinstance(entry, dict):
+        return entries, ["/sigs"]
+    for i, entry in enumerate(sigs):
+        at = "/sigs/%d" % i
+        if not (isinstance(entry, dict) and set(entry.keys()) == {"actor", "key", "sig"}
+                and isinstance(entry.get("actor"), str) and entry["actor"]
+                and _is_hex64(entry.get("key")) and _is_hex128(entry.get("sig"))):
+            malformed.append(at)
             continue
         try:
-            digest = sha256_hex(jcs({k: entry.get(k) for k in ("actor", "key", "sig")}))
+            digest = sha256_hex(jcs({k: entry[k] for k in ("actor", "key", "sig")}))
         except ValueError:
+            malformed.append(at)
             continue
         mult = seen.get(digest, 0)
         seen[digest] = mult + 1
-        out.append((digest, mult, entry.get("actor"), entry.get("key")))
-    return out
+        entries.append((digest, mult, entry["actor"], entry["key"]))
+    return entries, malformed
 
 
-def reportable_reason_pointers(envelope) -> set:
-    """Committed `because` entries a receipt MUST account for: every
-    `kind:"check"` reason. Prose carries no runtime and is not re-executed;
-    checks are, or are explicitly not-applicable, but never absent."""
+def _reason_shape(item):
+    """'check' | 'prose' | None — None means malformed, per warrant SPEC §3."""
+    if not isinstance(item, dict):
+        return None
+    kind = item.get("kind")
+    keys = set(item.keys())
+    if kind == "prose":
+        return "prose" if keys == {"kind", "text"} and isinstance(
+            item.get("text"), str) else None
+    if kind == "check":
+        ok = (keys <= {"kind", "check", "runtime", "verdict", "transcript"}
+              and {"kind", "check", "runtime", "verdict"} <= keys
+              and _is_hex64(item.get("check"))
+              and isinstance(item.get("runtime"), str) and item["runtime"]
+              and item.get("verdict") in VERDICTS
+              and ("transcript" not in keys or _is_hex64(item["transcript"])))
+        return "check" if ok else None
+    return None
+
+
+def reportable_reason_pointers(envelope):
+    """(reportable_check_pointers, malformed_pointers) over the WHOLE
+    committed `because[]`. Only a **well-formed prose** reason is
+    intentionally non-reportable; anything unrecognised is malformed, not
+    quietly absent."""
     body = envelope.get("body") if isinstance(envelope, dict) else None
     because = body.get("because") if isinstance(body, dict) else None
     if not isinstance(because, list):
-        return set()
-    return {"/because/%d" % i for i, item in enumerate(because)
-            if isinstance(item, dict) and item.get("kind") == "check"}
+        return set(), ["/body/because"]
+    reportable, malformed = set(), []
+    for i, item in enumerate(because):
+        shape = _reason_shape(item)
+        if shape is None:
+            malformed.append("/body/because/%d" % i)
+        elif shape == "check":
+            reportable.add("/because/%d" % i)
+    return reportable, malformed
 
 
-def _bind_to_envelope(f, envelope, src, good_sigs, good_reasons, at):
-    expected_sigs = envelope_signature_entries(envelope)
+def _bind_to_envelope(f, envelope, src, good_sigs, good_reasons, at, issues):
+    expected_sigs, sig_malformed = envelope_signature_entries(envelope)
     expected_keyed = {(d, m): (a, k) for d, m, a, k in expected_sigs}
     reported = {}
     for s in good_sigs:
@@ -890,7 +932,7 @@ def _bind_to_envelope(f, envelope, src, good_sigs, good_reasons, at):
         if s.get("actor") != actor or s.get("key") != pubkey:
             _f(f, "SIGNATURE_FIELD_MISMATCH", "%s [%s:%d]" % (at, key[0], key[1]))
 
-    expected_ptrs = reportable_reason_pointers(envelope)
+    expected_ptrs, reason_malformed = reportable_reason_pointers(envelope)
     reported_ptrs = {}
     for r in good_reasons:
         if r["ptr"] in reported_ptrs:
@@ -900,6 +942,16 @@ def _bind_to_envelope(f, envelope, src, good_sigs, good_reasons, at):
         _f(f, "REASON_MISSING", "%s%s" % (at, ptr))
     for ptr in sorted(set(reported_ptrs) - expected_ptrs):
         _f(f, "REASON_NOT_COMMITTED", "%s%s" % (at, ptr))
+
+    # A malformed committed occurrence may not be silently dropped: it is not
+    # a normal entry, so it must appear as a precisely located issue on this
+    # source — which then carries the record into exclusions honestly.
+    located = {x["at"].get("value") for x in issues
+               if isinstance(x.get("at"), dict)
+               and x["at"].get("kind") == "json-pointer"}
+    for ptr in sig_malformed + reason_malformed:
+        if ptr not in located:
+            _f(f, "MALFORMED_ENVELOPE_UNREPORTED", "%s%s" % (at, ptr))
 
 
 def _resolve_record(f, cas, src, at):
@@ -1305,7 +1357,7 @@ def _fixture():
          # the receipt must account for every signature the envelope carries
          "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
                          "key": k, "valid": True, "binding": "unverified"}
-                        for d, m, a, k in envelope_signature_entries(record)],
+                        for d, m, a, k in envelope_signature_entries(record)[0]],
          "issues": [{"code": "ID_UNSOUND", "severity": "ERR",
                      "at": {"kind": "path", "value": ".warrants/records/r.json"}}],
          "reasons": [{"ptr": "/because/0", "kind": "check", "runtime": "ski@v1",

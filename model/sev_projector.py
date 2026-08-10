@@ -461,7 +461,7 @@ def fixture(extra_files=None, misfiled_as=None):
          "id_sound": filed_as == wid, "settlement": [],
          "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
                          "key": k, "valid": True, "binding": "unverified"}
-                        for d, m, a, k in sm.envelope_signature_entries(record)],
+                        for d, m, a, k in sm.envelope_signature_entries(record)[0]],
          "issues": ([] if filed_as == wid else
                     [{"code": "ID_UNSOUND", "severity": "ERR",
                       "at": {"kind": "path", "value": rec_path}}]),
@@ -789,7 +789,7 @@ def run_vectors():
              "settlement": [],
              "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
                              "key": k, "valid": True, "binding": "unverified"}
-                            for d, m, a, k in sm.envelope_signature_entries(recd)],
+                            for d, m, a, k in sm.envelope_signature_entries(recd)[0]],
              "issues": [],
              "reasons": [{"ptr": "/because/0", "kind": rob["kind"],
                           "runtime": rob.get("runtime", runtime),
@@ -925,7 +925,7 @@ def run_vectors():
              "id_sound": True, "settlement": [],
              "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
                              "key": k, "valid": True, "binding": "unverified"}
-                            for d, m, a, k in sm.envelope_signature_entries(recG)],
+                            for d, m, a, k in sm.envelope_signature_entries(recG)[0]],
              "issues": [],
              "reasons": [{"ptr": "/because/0", "kind": "check",
                           "runtime": "ski@v1",
@@ -1069,7 +1069,7 @@ def run_vectors():
              "settlement": [],
              "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
                              "key": k, "valid": True, "binding": "unverified"}
-                            for d, m, a, k in sm.envelope_signature_entries(recd)],
+                            for d, m, a, k in sm.envelope_signature_entries(recd)[0]],
              "issues": [],
              "reasons": [{"ptr": "/because/0", "kind": "check", "runtime": "ski@v1",
                           "reason_digest": sm.sha256_hex(sm.jcs(rob)),
@@ -1381,7 +1381,7 @@ def run_vectors():
                                   "actor": a, "key": k, "valid": True,
                                   "binding": "unverified"}
                                  for d, m, a, k in
-                                 sm.envelope_signature_entries(recP)],
+                                 sm.envelope_signature_entries(recP)[0]],
                   "issues": [],
                   "reasons": [{"ptr": "/because/1", "kind": "check",
                                "runtime": "ski@v1",
@@ -1400,6 +1400,118 @@ def run_vectors():
     resP2, fP2 = project(snapP2, receiptP2, casP2)
     sm.check_equal("a committed prose reason is not demanded of the receipt",
                    fP2, [])
+
+    # re-gate: malformed COMMITTED evidence must not vanish before the
+    # bijection. A derivation that returns only what it understood makes an
+    # empty receipt an "exact bijection" with an empty derived set.
+    def _with_committed(sigs=None, because=None):
+        """Seal a record whose envelope/body carry the given raw shapes."""
+        body = {"warrant": "0.2", "decision": "accept", "subject": {},
+                "under": [],
+                "because": because if because is not None else [
+                    {"kind": "check", "runtime": "ski@v1",
+                     "check": sm.sha256_hex(b"policy"), "verdict": "pass",
+                     "transcript": "b" * 64}],
+                "evidence": [], "actor": {"id": "signer@example"},
+                "prior": [], "ts": 1}
+        rec = {"body": body,
+               "sigs": sigs if sigs is not None else [
+                   {"actor": "signer@example", "key": "c" * 64,
+                    "sig": "d" * 128}]}
+        w = sm.sha256_hex(sm.jcs(body))
+        fl = {".warrants/records/%s.json" % w: sm.jcs(rec),
+              ".warrants/blobs/p": b"policy"}
+        cs = {sm.sha256_hex(v): v for v in fl.values()}
+        un = sm.seal_universe(fl)
+        dd = sm.subroot_descriptor("warrant",
+                                   {"name": "warrant", "version": "0.4",
+                                    "spec_digest": sm.sha256_hex(b"spec")},
+                                   ".warrants/", un)
+        sn = sm.snapshot_object([dd], [])
+        bp = {e["path"]: e["sha256"] for e in un}
+        rp = ".warrants/records/%s.json" % w
+        entries, _mal = sm.envelope_signature_entries(rec)
+        ptrs, _mal2 = sm.reportable_reason_pointers(rec)
+        reasons = []
+        for ptr in sorted(ptrs):
+            idx = int(ptr.rsplit("/", 1)[1])
+            reasons.append({"ptr": ptr, "kind": "check", "runtime": "ski@v1",
+                            "reason_digest": sm.sha256_hex(sm.jcs(body["because"][idx])),
+                            "outcome": {"re_execution": "matched",
+                                        "claimed_verdict": "pass",
+                                        "observed_verdict": "pass",
+                                        "observed_result": "e" * 64,
+                                        "atp_spent": 7, "failure_code": None}})
+        srcs = sorted([
+            {"kind": "blob", "path": ".warrants/blobs/p",
+             "entry_digest": bp[".warrants/blobs/p"], "loaded": True, "issues": []},
+            {"kind": "record", "path": rp, "entry_digest": bp[rp], "loaded": True,
+             "claimed_wid": w, "computed_wid": w, "id_sound": True,
+             "settlement": [],
+             "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
+                             "key": k, "valid": True, "binding": "unverified"}
+                            for d, m, a, k in entries],
+             "issues": [], "reasons": reasons}],
+            key=lambda s: (sm.path_sort_key(s["path"]), s["entry_digest"]))
+        cr = {"subroot_descriptor_digest": sm.subroot_descriptor_digest(dd),
+              "grade": "base", "trust_config_digest": None,
+              "execution_policy": {"runtimes": [
+                  {"runtime": "ski@v1", "semantics": "sigma-book-i@v0.5",
+                   "semantics_digest": sm.sha256_hex(b"book1"),
+                   "budget_unit": "atp", "ceiling": 1000}]},
+              "ok": True, "errors": 0, "warnings": 0, "global_issues": [],
+              "sources": srcs}
+        return sn, {"receipt": "warrant.verification-receipt@v0", "core": cr,
+                    "producer": {"impl": "x", "artifact_digest": None,
+                                 "spec": "0.4", "report_digest": "f" * 64,
+                                 "local_notes": []}}, cs
+
+    malformed_cases = [
+        ("sigs is not a list", {"sigs": 7}, None),
+        ("sigs holds a scalar", {"sigs": [7]}, None),
+        ("signature missing fields", {"sigs": [{"actor": "a"}]}, None),
+        ("signature field of wrong type", {"sigs": [{"actor": "a", "key": "c" * 64,
+                                                    "sig": 7}]}, None),
+        # warrant's envelope schema is closed: an unknown member is not a
+        # harmless extra, it is a different object
+        ("signature with an unknown member",
+         {"sigs": [{"actor": "a", "key": "c" * 64, "sig": "d" * 128,
+                    "note": "smuggled"}]}, None),
+        ("because is not a list", None, 7),
+        ("because holds a scalar", None, [7]),
+        ("unknown reason kind", None, [{"kind": "sideways", "text": "hm"}]),
+        ("check reason with a bad field", None, [{"kind": "check", "runtime": "ski@v1",
+                                                  "check": "not-hex",
+                                                  "verdict": "pass"}]),
+    ]
+    for label, sigs, because in malformed_cases:
+        sn, rc, cs = _with_committed(
+            sigs=(sigs or {}).get("sigs") if sigs else None, because=because)
+        resX, fX = project(sn, rc, cs)
+        sm.check_true("malformed committed evidence (%s) -> refusal" % label,
+                      lambda resX=resX, fX=fX: resX is None and any(
+                          x["code"] == "MALFORMED_ENVELOPE_UNREPORTED" for x in fX))
+
+    # positive control: a well-formed prose reason is legitimately
+    # non-reportable and must NOT be treated as malformed
+    snPC, rcPC, csPC = _with_committed(because=[
+        {"kind": "prose", "text": "clause 1 of the policy"},
+        {"kind": "check", "runtime": "ski@v1", "check": sm.sha256_hex(b"policy"),
+         "verdict": "pass", "transcript": "b" * 64}])
+    resPC, fPC = project(snPC, rcPC, csPC)
+    sm.check_equal("well-formed prose beside a check projects cleanly", fPC, [])
+
+    # ...and a malformed occurrence that IS reported as a located issue is
+    # accepted, carrying the record into exclusions honestly
+    snR, rcR, csR = _with_committed(sigs=[7])
+    rec_src = [s for s in rcR["core"]["sources"] if s["kind"] == "record"][0]
+    rec_src["issues"] = [{"code": "MALFORMED_SIGNATURE", "severity": "ERR",
+                          "at": {"kind": "json-pointer", "value": "/sigs/0"}}]
+    rcR["core"].update(ok=False, errors=1)
+    resR, fR = project(snR, rcR, csR)
+    sm.check_equal("a reported malformed occurrence is accepted", fR, [])
+    sm.check_true("...and excludes the record honestly",
+                  lambda: resR["view_manifest"]["sources_excluded"] == 1)
 
     # re-gate P2-1: the empty-corpus guard needs its own negative control
     code_guard = (

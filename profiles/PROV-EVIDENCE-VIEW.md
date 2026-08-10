@@ -284,6 +284,11 @@ Rules this shape enforces:
   share that one definition, so the graph can never claim to have used what
   the manifest reports as excluded.
 
+- **Malformed committed evidence is evidence, not absence.** Derivation
+  over the envelope is total: unparseable `sigs`/`because` shapes become
+  located malformed occurrences the receipt must report, never an empty
+  expected set. Otherwise "this dataset holds no signature evidence" could
+  mean "the committed signature was malformed and nobody said so".
 - **Coverage is only as honest as the receipt's completeness.** A
   dataset-relative statement (`coverage`, `L-NO*`) presupposes that the
   receipt reports everything the committed bytes contain: signatures bound

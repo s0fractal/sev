@@ -6,7 +6,7 @@
 > a normative copy and instead pins the Warrant artifact/version/digest, and
 > this document remains here as provenance, marked superseded.
 
-**Status:** PROPOSAL SKETCH **rev 7** (2026-08-10), design-only, not filed.
+**Status:** PROPOSAL SKETCH **rev 8** (2026-08-10), design-only, not filed.
 Rev 5 (fifth Codex review, AMEND — compositional layer): the public verdict
 is now **`validate_warrant_receipt(snapshot, receipt, cas)`** in the model —
 descriptor lookup by digest, semantic role check (incl. non-null
@@ -204,6 +204,17 @@ JCS-canonical I-JSON per warrant SPEC §4; closed schemas; one type tag.
 - ▲ **`global_issues[]`** carries store- and settlement-level problems that
   belong to no single source file (invalid threshold policy, unverified
   genesis, missing jurisdiction root).
+- ▲ **The binding is over EVERY committed occurrence, not the well-formed
+  subset (rev 8).** Derivation is total: `sigs`/`because` that are not
+  lists, entries that are not objects, and entries failing warrant SPEC §3's
+  closed shapes are returned as **malformed occurrences**, never filtered
+  away. A malformed occurrence does not belong in `signatures[]`/`reasons[]`
+  — but the receipt MUST carry a precisely located issue for it
+  (`MALFORMED_ENVELOPE_UNREPORTED` otherwise), which then carries the record
+  into exclusions honestly. Only a **well-formed prose** reason is
+  legitimately non-reportable. Without this, `{"sigs": [7]}` derived an
+  empty expected multiset and a receipt reporting no signatures was an
+  "exact bijection" with it — malformed evidence became *no* evidence.
 - ▲ **Nested entries are bound to the envelope, not merely well-formed
   (rev 7).** `signatures[]` MUST be an exact bijection with the committed
   envelope's `sigs[]` — same `(sig_digest, multiplicity)` multiset, with
