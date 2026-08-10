@@ -45,3 +45,4 @@ round without a SHA is invalid.
 | 6v | 2026-08-10 | Codex | AMEND (target profile only; core + MVP clean) | `b9cd539` |
 | 6w | 2026-08-10 | Codex | AMEND (core only; MVP + profile not reviewed) | `8887085` |
 | 6x | 2026-08-10 | Codex | AMEND (core + MVP inherited; profile out of scope) | `85269c0` |
+| 6y | 2026-08-10 | Codex | AMEND (core + MVP inherited; profile out of scope) | `f705b56` |

@@ -1957,6 +1957,20 @@ def run_vectors():
                   lambda: ("disjoint", "activity+entity", "urn:x")
                   in _prov_violations(_both))
 
+    # the MVP must not drop a source on a producer-selected `loaded`
+    snLoad, rcLoad, csLoad = ski_fixture()
+    recsrc = [x for x in rcLoad["core"]["sources"] if x["kind"] == "record"][0]
+    recsrc["loaded"] = False
+    recsrc["issues"] = sorted(recsrc["issues"] + [
+        {"code": "RECORD_UNREADABLE", "severity": "ERR",
+         "at": {"kind": "path", "value": recsrc["path"]}}],
+        key=lambda x: sm.jcs(x))
+    rcLoad["core"].update(ok=False, errors=rcLoad["core"]["errors"] + 1)
+    resLoad, fLoad = project(snLoad, rcLoad, csLoad)
+    sm.check_true("a fabricated unreadable record cannot vanish from the graph",
+                  lambda: resLoad is None
+                  and any(x["code"] == "LOADED_MISREPORTED" for x in fLoad))
+
     # the MVP inherits the core rule: no evidence resolver, no projection
     snNo, rcNo, _csNo = ski_fixture()
     resNo, fNo = project(snNo, rcNo, None)

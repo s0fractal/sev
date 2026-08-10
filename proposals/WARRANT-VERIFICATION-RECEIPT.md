@@ -6,7 +6,7 @@
 > a normative copy and instead pins the Warrant artifact/version/digest, and
 > this document remains here as provenance, marked superseded.
 
-**Status:** PROPOSAL SKETCH **rev 13** (2026-08-10), design-only, not filed.
+**Status:** PROPOSAL SKETCH **rev 14** (2026-08-10), design-only, not filed.
 Rev 5 (fifth Codex review, AMEND — compositional layer): the public verdict
 is now **`validate_warrant_receipt(snapshot, receipt, cas)`** in the model —
 descriptor lookup by digest, semantic role check (incl. non-null
@@ -204,6 +204,19 @@ JCS-canonical I-JSON per warrant SPEC §4; closed schemas; one type tag.
 - ▲ **`global_issues[]`** carries store- and settlement-level problems that
   belong to no single source file (invalid threshold policy, unverified
   genesis, missing jurisdiction root).
+- ▲ **`loaded` is derived, never chosen (rev 14).** It means exactly: the
+  consumer obtained that member's bytes and their digest matched. Parse and
+  schema failures are *issues*, not un-loadedness. Treating the producer's
+  field as permission to skip byte derivation let a fabricated "unreadable"
+  record — bytes present in the store, digest correct, strict parse clean —
+  validate cleanly and disappear from the projected graph. The consumer now
+  resolves every member and reports `LOADED_MISREPORTED` on disagreement in
+  either direction, and byte-derived checks follow the derived value.
+- ▲ **`producer` is host-local but still has a wire contract (rev 14).**
+  "Host-local" means outside consensus identity, not unvalidated: the block
+  is a closed schema (`impl`, `artifact_digest`, `spec`, `report_digest`,
+  `local_notes`) with exact keys and types, so a structural inspection can
+  honestly call itself structural.
 - ▲ **Absence of evidence is not evidence (rev 13).** The composed verdict
   REQUIRES an evidence resolver; `cas = None` is `CAS_REQUIRED`, never a
   clean result. Every identity-bearing check — WarrantID re-derivation,

@@ -663,7 +663,30 @@ def validate_receipt_core(core, descriptor=None, cas=None, view=None) -> list:
         err_here = any(x["severity"] == "ERR" for x in issues)
         if src["loaded"] is False and not err_here:
             _f(f, "UNLOADED_WITHOUT_ERR", at)
-        if kind != "record" or not src["loaded"]:
+
+        # `loaded` is DERIVED, not chosen. It means exactly: the consumer
+        # obtained this member's bytes and their digest matched. Parse and
+        # schema failures are issues, not un-loadedness. Treating the
+        # producer's field as permission to skip byte derivation let a
+        # fabricated "unreadable" record — bytes present, digest correct,
+        # strict parse clean — validate and vanish from the graph.
+        if cas is not None:
+            try:
+                cas_resolve(cas, src["entry_digest"])
+                derived_loaded = True
+            except (KeyError, SealViolation):
+                derived_loaded = False
+            if src["loaded"] is not derived_loaded:
+                _f(f, "LOADED_MISREPORTED", at)
+            # Gating on the DERIVED value, not the reported one. Unisolatable
+            # by a vector today — a misreport already fires
+            # LOADED_MISREPORTED above, so both gates refuse the same inputs —
+            # and labelled rather than counted. It is kept so that byte
+            # derivation follows the bytes even if that finding is ever
+            # softened.
+            if kind != "record" or not derived_loaded:
+                continue
+        elif kind != "record" or not src["loaded"]:
             continue
 
         c, w = src["claimed_wid"], src["computed_wid"]
@@ -1282,6 +1305,23 @@ def _verdict(snapshot, receipt, cas, expected_version, view,
     if set(receipt.keys()) != {"receipt", "core", "producer"}:
         _f(f, "SCHEMA_KEYS", "/receipt")
         return f
+    # `producer` is host-local — it carries no cross-implementation
+    # agreement — but "host-local" means "outside consensus identity", not
+    # "without a wire contract". A closed schema is claimed, so it is
+    # enforced (P2).
+    producer = receipt["producer"]
+    if not (isinstance(producer, dict)
+            and set(producer.keys()) == {"impl", "artifact_digest", "spec",
+                                         "report_digest", "local_notes"}
+            and isinstance(producer["impl"], str) and producer["impl"]
+            and (producer["artifact_digest"] is None
+                 or _is_hex64(producer["artifact_digest"]))
+            and isinstance(producer["spec"], str) and producer["spec"]
+            and _is_hex64(producer["report_digest"])
+            and isinstance(producer["local_notes"], list)
+            and all(isinstance(n, str) for n in producer["local_notes"])):
+        _f(f, "BAD_PRODUCER_SCHEMA", "/producer")
+
     core = receipt["core"]
     core_f = validate_receipt_core(core, cas=cas, view=view)
     f.extend(core_f)
@@ -1725,6 +1765,69 @@ def run_vectors():
                lambda: _sinks_agree(snap, no_blob, cas)
                and any(x["code"] == "CHECK_BLOB_ABSENT"
                        for x in validate_warrant_receipt(snap, no_blob, cas)))
+
+    # `loaded` is derived from the store, not chosen by the producer
+    fake_unread = _mutate(receipt, lambda r: (
+        r["core"]["sources"][1].update(loaded=False),
+        r["core"]["sources"][1].__setitem__("issues", sorted(
+            r["core"]["sources"][1]["issues"] + [
+                {"code": "RECORD_UNREADABLE", "severity": "ERR",
+                 "at": {"kind": "path", "value": r["core"]["sources"][1]["path"]}}],
+            key=lambda x: jcs(x))),
+        r["core"].update(ok=False, errors=r["core"]["errors"] + 1)))
+    check_true("a fabricated 'unreadable' record over readable bytes is caught",
+               lambda: any(x["code"] == "LOADED_MISREPORTED"
+                           for x in validate_warrant_receipt(snap, fake_unread, cas)))
+
+    # an honest inaccessible member: the store really lacks it
+    partial_cas = {k: v for k, v in cas.items()
+                   if k != receipt["core"]["sources"][1]["entry_digest"]}
+    honest_absent = _mutate(receipt, lambda r: (
+        r["core"]["sources"][1].update(loaded=False),
+        r["core"]["sources"][1].__setitem__("issues", sorted(
+            r["core"]["sources"][1]["issues"] + [
+                {"code": "RECORD_UNREADABLE", "severity": "ERR",
+                 "at": {"kind": "path", "value": r["core"]["sources"][1]["path"]}}],
+            key=lambda x: jcs(x))),
+        r["core"].update(ok=False, errors=r["core"]["errors"] + 1)))
+    codes_absent = [x["code"] for x in
+                    validate_warrant_receipt(snap, honest_absent, partial_cas)]
+    check_true("a genuinely inaccessible member is accepted as unloaded",
+               lambda: "LOADED_MISREPORTED" not in codes_absent)
+    check_true("...and its absence is still reported",
+               lambda: any(c in ("CAS_UNRESOLVABLE",) for c in codes_absent))
+
+    # the mirror: claiming loaded over bytes the store does not have
+    claim_loaded = _mutate(receipt, lambda r: None)
+    check_true("claiming loaded over missing bytes is caught",
+               lambda: any(x["code"] == "LOADED_MISREPORTED"
+                           for x in validate_warrant_receipt(snap, claim_loaded,
+                                                             partial_cas)))
+
+    # a blob member gets the same treatment, not only records
+    blob_lie = _mutate(receipt, lambda r: (
+        r["core"]["sources"][0].update(loaded=False),
+        r["core"]["sources"][0].__setitem__("issues", [
+            {"code": "BLOB_UNREADABLE", "severity": "ERR",
+             "at": {"kind": "path", "value": r["core"]["sources"][0]["path"]}}]),
+        r["core"].update(ok=False, errors=r["core"]["errors"] + 1)))
+    check_true("the rule covers blob/genesis/other members too",
+               lambda: any(x["code"] == "LOADED_MISREPORTED"
+                           for x in validate_warrant_receipt(snap, blob_lie, cas)))
+
+    # producer is host-local but still has a wire contract
+    for label, mutate in [
+            ("a non-object producer", lambda r: r.update(producer=7)),
+            ("an empty producer", lambda r: r.update(producer={})),
+            ("an unknown producer member",
+             lambda r: r["producer"].update(extra="x")),
+            ("a malformed report digest",
+             lambda r: r["producer"].update(report_digest="nope"))]:
+        bad_prod = _mutate(receipt, mutate)
+        check_true("producer schema: %s is refused" % label,
+                   lambda bad_prod=bad_prod: any(
+                       x["code"] == "BAD_PRODUCER_SCHEMA"
+                       for x in validate_warrant_receipt(snap, bad_prod, cas)))
 
     # absence of evidence bytes is never a clean verdict
     resealed = _mutate(receipt, lambda r: None)
