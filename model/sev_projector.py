@@ -1740,24 +1740,64 @@ def run_vectors():
         SHAPES = json.load(_fh)
     RDF_TYPE_IRI = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
     PROFILE_CLASSES = SHAPES["classes"]
-    PROV_SIGNATURES = {k: tuple(v) for k, v in SHAPES["predicates"].items()}
+    PROV_SIGNATURES = SHAPES["predicates"]
     DISJOINT_PAIRS = [tuple(p) for p in SHAPES["disjoint_pairs"]]
     ROOT_KINDS = {"http://www.w3.org/ns/prov#Activity": "activity",
                   "http://www.w3.org/ns/prov#Entity": "entity",
                   "http://www.w3.org/ns/prov#Agent": "agent",
                   "http://www.w3.org/ns/prov#Influence": "influence"}
 
-    def _kind_of_class(cls):
-        """Transitive closure to a root kind; None for unknown classes."""
-        seen, cur = set(), cls
-        while cur in PROFILE_CLASSES and cur not in seen:
-            if cur in ROOT_KINDS:
-                return ROOT_KINDS[cur]
+    def _ancestry(cls):
+        """Full class ancestry (the class itself plus every declared parent).
+
+        Resolving straight to a root kind threw away the identity a
+        qualified relation needs: `qualifiedUsage` requires an object of
+        class `prov:Usage`, not merely something of kind `influence`.
+        """
+        out, seen, cur = [], set(), cls
+        while cur is not None and cur in PROFILE_CLASSES and cur not in seen:
+            out.append(cur)
             seen.add(cur)
             cur = PROFILE_CLASSES[cur]
-            if cur is None:
-                return None
+        return out
+
+    def _kind_of_class(cls):
+        """Root kind for a class, or None if it is unknown."""
+        for anc in _ancestry(cls):
+            if anc in ROOT_KINDS:
+                return ROOT_KINDS[anc]
         return None
+
+    def _validate_shapes():
+        """The shapes artifact validates itself: no dangling parents, no
+        cycles, every class reaching a declared root, every endpoint class
+        known, every declared MVP predicate real."""
+        problems = []
+        for cls, parent in PROFILE_CLASSES.items():
+            if parent is not None and parent not in PROFILE_CLASSES:
+                problems.append(("dangling-parent", cls))
+            seen, cur = set(), cls
+            while cur is not None and cur in PROFILE_CLASSES:
+                if cur in seen:
+                    problems.append(("cycle", cls))
+                    break
+                seen.add(cur)
+                cur = PROFILE_CLASSES[cur]
+            if _kind_of_class(cls) is None:
+                problems.append(("no-root", cls))
+        for pred, shape in PROV_SIGNATURES.items():
+            for pos in ("subject", "object"):
+                spec = shape.get(pos, {})
+                if "class" in spec and spec["class"] not in PROFILE_CLASSES:
+                    problems.append(("unknown-endpoint-class", pred))
+                if "kind" in spec and spec["kind"] not in SHAPES["kinds"]:
+                    problems.append(("unknown-kind", pred))
+                if "class" not in spec and "kind" not in spec:
+                    problems.append(("empty-endpoint", pred))
+        for pred in SHAPES["mvp_predicates"]:
+            if pred not in PROV_SIGNATURES:
+                problems.append(("mvp-predicate-not-in-target", pred))
+        return sorted(set(problems))
 
     _TERM = re.compile(r'<([^>]*)>|"((?:[^"\\]|\\.)*)"(?:\^\^<[^>]*>)?')
 
@@ -1782,29 +1822,32 @@ def run_vectors():
 
     def _prov_violations(nquads):
         quads = _parse_nquads(nquads)
-        kinds = {}
+        kinds, classes = {}, {}
         for terms in quads:
             (subj, s_iri), (pred, _p), (obj, o_iri) = terms[0], terms[1], terms[2]
             if s_iri and pred == RDF_TYPE_IRI and o_iri:
+                anc = _ancestry(obj)
+                if anc:
+                    classes.setdefault(subj, set()).update(anc)
                 kind = _kind_of_class(obj)
                 if kind:
                     kinds.setdefault(subj, set()).add(kind)
 
         bad = set()
-        # Disjointness first, over the closure, and only for the pairs PROV-O
-        # actually declares: Activity ⟂ Entity. An Agent may also be an
-        # Entity — PROV-O's own wasAssociatedWith example types its agent as
-        # Person, Agent AND Entity.
         for node, have in kinds.items():
             for a, b in DISJOINT_PAIRS:
                 if a in have and b in have:
                     bad.add(("disjoint", "%s+%s" % (a, b), node))
 
-        def _bad(node, is_iri, want):
-            if want == "any":
-                return not is_iri              # only literals are excluded
+        def _bad(node, is_iri, spec):
             if not is_iri:
                 return True                    # a literal is never a PROV node
+            if "class" in spec:
+                # satisfied by the exact class or any declared subclass
+                return spec["class"] not in classes.get(node, set())
+            want = spec["kind"]
+            if want == "any":
+                return False
             have = kinds.get(node, set())
             if not have:
                 return want != "entity"        # untyped nodes are Entities
@@ -1812,13 +1855,12 @@ def run_vectors():
 
         for terms in quads:
             (subj, s_iri), (pred, _p), (obj, o_iri) = terms[0], terms[1], terms[2]
-            sig = PROV_SIGNATURES.get(pred)
-            if not sig:
+            shape = PROV_SIGNATURES.get(pred)
+            if not shape:
                 continue
-            want_s, want_o = sig
-            if _bad(subj, s_iri, want_s):
+            if _bad(subj, s_iri, shape["subject"]):
                 bad.add(("subject", pred.rsplit("#", 1)[-1], subj))
-            if _bad(obj, o_iri, want_o):
+            if _bad(obj, o_iri, shape["object"]):
                 bad.add(("object", pred.rsplit("#", 1)[-1], obj))
         return bad
 
@@ -1910,6 +1952,52 @@ def run_vectors():
     sm.check_true("a node typed Activity AND Entity is rejected outright",
                   lambda: ("disjoint", "activity+entity", "urn:x")
                   in _prov_violations(_both))
+
+    # the shapes artifact validates itself before anything trusts it
+    sm.check_equal("the shapes artifact is internally sound", _validate_shapes(), [])
+
+    # qualified relations need an EXACT class, not just a root kind
+    U, A, AT, PL, CO = ("Usage", "Association", "Attribution", "Plan",
+                        "Collection")
+
+    def _typed(node, cls):
+        return "<%s> %s <http://www.w3.org/ns/prov#%s> ." % (node, T, cls)
+
+    for label, graph, expect in [
+        ("qualifiedUsage pointing at an Association", _nq(
+            _typed("urn:act", "Activity"), _typed("urn:q", A),
+            "<urn:act> <http://www.w3.org/ns/prov#qualifiedUsage> <urn:q> ."), True),
+        ("qualifiedAssociation pointing at a Usage", _nq(
+            _typed("urn:act", "Activity"), _typed("urn:q", U),
+            "<urn:act> <http://www.w3.org/ns/prov#qualifiedAssociation> <urn:q> ."),
+         True),
+        ("qualifiedAttribution pointing at a Usage", _nq(
+            _typed("urn:e", "Entity"), _typed("urn:q", U),
+            "<urn:e> <http://www.w3.org/ns/prov#qualifiedAttribution> <urn:q> ."),
+         True),
+        # isolates the hadPlan SUBJECT class: object is a correct Plan
+        ("hadPlan from a Usage to a Plan", _nq(
+            _typed("urn:u", U), _typed("urn:p", PL),
+            "<urn:u> <http://www.w3.org/ns/prov#hadPlan> <urn:p> ."), True),
+        ("hadPlan from an Association to a plain Entity", _nq(
+            _typed("urn:a", A), _typed("urn:e", "Entity"),
+            "<urn:a> <http://www.w3.org/ns/prov#hadPlan> <urn:e> ."), True),
+        ("hadMember from a plain Entity", _nq(
+            _typed("urn:e", "Entity"), _typed("urn:f", "Entity"),
+            "<urn:e> <http://www.w3.org/ns/prov#hadMember> <urn:f> ."), True),
+        ("hadPlan done correctly", _nq(
+            _typed("urn:a", A), _typed("urn:p", PL),
+            "<urn:a> <http://www.w3.org/ns/prov#hadPlan> <urn:p> ."), False),
+        ("hadMember from a Collection", _nq(
+            _typed("urn:c", CO), _typed("urn:e", "Entity"),
+            "<urn:c> <http://www.w3.org/ns/prov#hadMember> <urn:e> ."), False),
+        ("qualifiedAttribution done correctly", _nq(
+            _typed("urn:e", "Entity"), _typed("urn:q", AT),
+            "<urn:e> <http://www.w3.org/ns/prov#qualifiedAttribution> <urn:q> ."),
+         False),
+    ]:
+        sm.check_equal("qualified shape: %s" % label,
+                       bool(_prov_violations(graph)), expect)
 
     # target-profile predicates the MVP does not emit are still validated
     for label, graph, expect in [

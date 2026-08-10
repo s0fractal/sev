@@ -551,6 +551,21 @@ reproduced countervector:
   and false positives (valid graphs using `oaip:Execution`,
   `oaip:Validation`, `bos:Trajectory`, `wrt:Adjudication` rejected).
 
+  **Endpoints name a kind *or* an exact class.** A root kind is too coarse
+  for PROV's qualified relations: collapsing `Usage`, `Association` and
+  `Attribution` into one `influence` kind let `qualifiedUsage` point at an
+  Association, `hadPlan` run from any Influence to any Entity, and
+  `hadMember` start at any Entity. The shape language therefore allows
+  `{"kind": …}` or `{"class": …}`, the latter satisfied by that class or any
+  declared subclass — so PROV-O's real ranges are expressed:
+  `qualifiedUsage → Usage`, `qualifiedAssociation → Association`,
+  `qualifiedAttribution → Attribution`, `hadPlan: Association → Plan`,
+  `hadMember: Collection → Entity`. The machine keeps each node's full class
+  ancestry rather than reducing it to a root kind immediately. The artifact
+  also **validates itself** — no dangling parents, no cycles, every class
+  reaching a declared root, every endpoint class known, every declared MVP
+  predicate real.
+
   **Target coverage vs MVP coverage are named, not conflated.** The shapes
   file carries every target predicate — including ones the current MVP never
   emits (`wasDerivedFrom`, `wasInvalidatedBy`, `qualifiedUsage`,

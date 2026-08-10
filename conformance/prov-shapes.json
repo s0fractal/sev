@@ -1,15 +1,25 @@
 {
   "shapes": "sev.prov-shapes@v0",
-  "note": "Machine-readable endpoint shapes for the FULL sev@v0 target profile. The class hierarchy and the predicate signatures live here together, so a guard cannot carry a complete class registry beside an MVP-only predicate list. Language-neutral by design: a second implementation reads this file, not the Python.",
-  "kinds": ["activity", "entity", "agent", "influence", "any"],
-  "disjoint_pairs": [["activity", "entity"]],
+  "note": "Machine-readable endpoint shapes for the FULL sev@v0 target profile. Classes and predicate shapes live together, so a guard cannot carry a complete class registry beside an MVP-only predicate list. Endpoints name either a root KIND or an exact CLASS: collapsing Usage, Association and Attribution into one kind let qualifiedUsage point at an Association and hadPlan run from any Influence to any Entity. Language-neutral by design: a second implementation reads this file.",
+  "kinds": [
+    "activity",
+    "entity",
+    "agent",
+    "influence",
+    "any"
+  ],
+  "disjoint_pairs": [
+    [
+      "activity",
+      "entity"
+    ]
+  ],
   "disjoint_note": "PROV-O declares exactly one disjointness axiom among the roots: prov:Activity owl:disjointWith prov:Entity. An Agent may also be an Entity (see PROV-O's normative wasAssociatedWith example, which types its agent as Person, Agent and Entity).",
   "classes": {
     "http://www.w3.org/ns/prov#Activity": null,
     "http://www.w3.org/ns/prov#Entity": null,
     "http://www.w3.org/ns/prov#Agent": null,
     "http://www.w3.org/ns/prov#Influence": null,
-
     "https://s0fractal.dev/ns/sigma#CheckRun": "http://www.w3.org/ns/prov#Activity",
     "https://s0fractal.dev/ns/wrt#Filing": "http://www.w3.org/ns/prov#Activity",
     "https://s0fractal.dev/ns/wrt#Adjudication": "https://s0fractal.dev/ns/wrt#Filing",
@@ -17,7 +27,6 @@
     "https://github.com/s0fractal/oaip/ns#Execution": "http://www.w3.org/ns/prov#Activity",
     "https://github.com/s0fractal/oaip/ns#Validation": "http://www.w3.org/ns/prov#Activity",
     "https://s0fractal.dev/ns/bos#Trajectory": "http://www.w3.org/ns/prov#Activity",
-
     "http://www.w3.org/ns/prov#Bundle": "http://www.w3.org/ns/prov#Entity",
     "http://www.w3.org/ns/prov#Plan": "http://www.w3.org/ns/prov#Entity",
     "https://s0fractal.dev/ns/wrt#Warrant": "http://www.w3.org/ns/prov#Entity",
@@ -31,35 +40,148 @@
     "https://s0fractal.dev/ns/bos#Assessment": "http://www.w3.org/ns/prov#Entity",
     "https://s0fractal.dev/ns/bos#ContextCut": "http://www.w3.org/ns/prov#Entity",
     "https://s0fractal.dev/ns/bos#RelationClaim": "http://www.w3.org/ns/prov#Entity",
-
     "http://www.w3.org/ns/prov#Person": "http://www.w3.org/ns/prov#Agent",
     "http://www.w3.org/ns/prov#SoftwareAgent": "http://www.w3.org/ns/prov#Agent",
     "http://www.w3.org/ns/prov#Organization": "http://www.w3.org/ns/prov#Agent",
-
     "http://www.w3.org/ns/prov#Usage": "http://www.w3.org/ns/prov#Influence",
     "http://www.w3.org/ns/prov#Association": "http://www.w3.org/ns/prov#Influence",
-    "http://www.w3.org/ns/prov#Attribution": "http://www.w3.org/ns/prov#Influence"
+    "http://www.w3.org/ns/prov#Attribution": "http://www.w3.org/ns/prov#Influence",
+    "http://www.w3.org/ns/prov#Collection": "http://www.w3.org/ns/prov#Entity"
   },
   "predicates": {
-    "http://www.w3.org/ns/prov#used": ["activity", "entity"],
-    "http://www.w3.org/ns/prov#wasInformedBy": ["activity", "activity"],
-    "http://www.w3.org/ns/prov#generated": ["activity", "entity"],
-    "http://www.w3.org/ns/prov#wasGeneratedBy": ["entity", "activity"],
-    "http://www.w3.org/ns/prov#wasInvalidatedBy": ["entity", "activity"],
-    "http://www.w3.org/ns/prov#wasDerivedFrom": ["entity", "entity"],
-    "http://www.w3.org/ns/prov#specializationOf": ["entity", "entity"],
-    "http://www.w3.org/ns/prov#wasAssociatedWith": ["activity", "agent"],
-    "http://www.w3.org/ns/prov#wasAttributedTo": ["entity", "agent"],
-    "http://www.w3.org/ns/prov#actedOnBehalfOf": ["agent", "agent"],
-    "http://www.w3.org/ns/prov#qualifiedUsage": ["activity", "influence"],
-    "http://www.w3.org/ns/prov#qualifiedAssociation": ["activity", "influence"],
-    "http://www.w3.org/ns/prov#qualifiedAttribution": ["entity", "influence"],
-    "http://www.w3.org/ns/prov#hadPlan": ["influence", "entity"],
-    "http://www.w3.org/ns/prov#hadMember": ["entity", "entity"],
-    "http://www.w3.org/ns/prov#wasInfluencedBy": ["any", "any"]
+    "http://www.w3.org/ns/prov#used": {
+      "subject": {
+        "kind": "activity"
+      },
+      "object": {
+        "kind": "entity"
+      }
+    },
+    "http://www.w3.org/ns/prov#wasInformedBy": {
+      "subject": {
+        "kind": "activity"
+      },
+      "object": {
+        "kind": "activity"
+      }
+    },
+    "http://www.w3.org/ns/prov#generated": {
+      "subject": {
+        "kind": "activity"
+      },
+      "object": {
+        "kind": "entity"
+      }
+    },
+    "http://www.w3.org/ns/prov#wasGeneratedBy": {
+      "subject": {
+        "kind": "entity"
+      },
+      "object": {
+        "kind": "activity"
+      }
+    },
+    "http://www.w3.org/ns/prov#wasInvalidatedBy": {
+      "subject": {
+        "kind": "entity"
+      },
+      "object": {
+        "kind": "activity"
+      }
+    },
+    "http://www.w3.org/ns/prov#wasDerivedFrom": {
+      "subject": {
+        "kind": "entity"
+      },
+      "object": {
+        "kind": "entity"
+      }
+    },
+    "http://www.w3.org/ns/prov#specializationOf": {
+      "subject": {
+        "kind": "entity"
+      },
+      "object": {
+        "kind": "entity"
+      }
+    },
+    "http://www.w3.org/ns/prov#wasAssociatedWith": {
+      "subject": {
+        "kind": "activity"
+      },
+      "object": {
+        "kind": "agent"
+      }
+    },
+    "http://www.w3.org/ns/prov#wasAttributedTo": {
+      "subject": {
+        "kind": "entity"
+      },
+      "object": {
+        "kind": "agent"
+      }
+    },
+    "http://www.w3.org/ns/prov#actedOnBehalfOf": {
+      "subject": {
+        "kind": "agent"
+      },
+      "object": {
+        "kind": "agent"
+      }
+    },
+    "http://www.w3.org/ns/prov#qualifiedUsage": {
+      "subject": {
+        "kind": "activity"
+      },
+      "object": {
+        "class": "http://www.w3.org/ns/prov#Usage"
+      }
+    },
+    "http://www.w3.org/ns/prov#qualifiedAssociation": {
+      "subject": {
+        "kind": "activity"
+      },
+      "object": {
+        "class": "http://www.w3.org/ns/prov#Association"
+      }
+    },
+    "http://www.w3.org/ns/prov#qualifiedAttribution": {
+      "subject": {
+        "kind": "entity"
+      },
+      "object": {
+        "class": "http://www.w3.org/ns/prov#Attribution"
+      }
+    },
+    "http://www.w3.org/ns/prov#hadPlan": {
+      "subject": {
+        "class": "http://www.w3.org/ns/prov#Association"
+      },
+      "object": {
+        "class": "http://www.w3.org/ns/prov#Plan"
+      }
+    },
+    "http://www.w3.org/ns/prov#hadMember": {
+      "subject": {
+        "class": "http://www.w3.org/ns/prov#Collection"
+      },
+      "object": {
+        "kind": "entity"
+      }
+    },
+    "http://www.w3.org/ns/prov#wasInfluencedBy": {
+      "subject": {
+        "kind": "any"
+      },
+      "object": {
+        "kind": "any"
+      }
+    }
   },
   "predicate_notes": {
-    "wasInfluencedBy": "PROV-O leaves this unconstrained across the three roots; modelled as any->any rather than guessed."
+    "shape_language": "Each endpoint is {\"kind\": <root kind>} or {\"class\": <exact class IRI>}. A class requirement is satisfied by that class or any declared subclass of it.",
+    "wasInfluencedBy": "PROV-O leaves this unconstrained across the roots; modelled as any->any rather than guessed.",
+    "qualified_relations": "PROV-O gives these exact ranges: qualifiedUsage->Usage, qualifiedAssociation->Association, qualifiedAttribution->Attribution, hadPlan Association->Plan, hadMember Collection->Entity."
   },
   "mvp_predicates": [
     "http://www.w3.org/ns/prov#used",
