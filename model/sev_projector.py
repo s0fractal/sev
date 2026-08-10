@@ -1729,55 +1729,23 @@ def run_vectors():
     # could stand in an Entity position although PROV makes those classes
     # disjoint; and the Agent branch and literal objects were never checked
     # at all (re-gate P1).
-    PROV_NS = "http://www.w3.org/ns/prov#"
-    OAIP_NS = "https://github.com/s0fractal/oaip/ns#"
-    BOS_NS = "https://s0fractal.dev/ns/bos#"
+    # The shapes are DATA, not code: classes, disjointness axioms and
+    # predicate endpoint kinds live together in one machine-readable
+    # artifact, so a complete class registry can no longer sit beside an
+    # MVP-only predicate list (re-gate P1). A second implementation reads
+    # the same file.
+    SHAPES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "..", "conformance", "prov-shapes.json")
+    with open(SHAPES_PATH) as _fh:
+        SHAPES = json.load(_fh)
     RDF_TYPE_IRI = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
-
-    # A single machine-readable class hierarchy for the WHOLE target profile,
-    # not a hand-kept membership list. Maintaining the latter produced both a
-    # false negative (a node typed Activity AND Entity satisfied an Entity
-    # position, though PROV declares them disjoint) and false positives
-    # (valid target graphs using oaip:Execution, oaip:Validation,
-    # bos:Trajectory or wrt:Adjudication were rejected). Class -> parent;
-    # roots carry the three disjoint PROV kinds.
-    # the only disjointness axiom PROV-O states among these three
-    DISJOINT_PAIRS = (("activity", "entity"),)
-    ROOT_KINDS = {PROV_NS + "Activity": "activity",
-                  PROV_NS + "Entity": "entity",
-                  PROV_NS + "Agent": "agent"}
-    PROFILE_CLASSES = {
-        PROV_NS + "Activity": None,
-        PROV_NS + "Entity": None,
-        PROV_NS + "Agent": None,
-        # activities
-        "https://s0fractal.dev/ns/sigma#CheckRun": PROV_NS + "Activity",
-        "https://s0fractal.dev/ns/wrt#Filing": PROV_NS + "Activity",
-        "https://s0fractal.dev/ns/wrt#Adjudication":
-            "https://s0fractal.dev/ns/wrt#Filing",
-        "https://s0fractal.dev/ns/sev#VerificationActivity": PROV_NS + "Activity",
-        OAIP_NS + "Execution": PROV_NS + "Activity",
-        OAIP_NS + "Validation": PROV_NS + "Activity",
-        BOS_NS + "Trajectory": PROV_NS + "Activity",
-        # entities
-        PROV_NS + "Bundle": PROV_NS + "Entity",
-        PROV_NS + "Plan": PROV_NS + "Entity",
-        "https://s0fractal.dev/ns/wrt#Warrant": PROV_NS + "Entity",
-        "https://s0fractal.dev/ns/wrt#Reason": PROV_NS + "Entity",
-        "https://s0fractal.dev/ns/wrt#Signature": PROV_NS + "Entity",
-        "https://s0fractal.dev/ns/sev#Source": PROV_NS + "Entity",
-        "https://s0fractal.dev/ns/sev#ExecutionAssessment": PROV_NS + "Entity",
-        "https://s0fractal.dev/ns/sev#VerificationReceipt": PROV_NS + "Entity",
-        OAIP_NS + "Intent": PROV_NS + "Entity",
-        OAIP_NS + "ClaimCandidate": PROV_NS + "Entity",
-        BOS_NS + "Assessment": PROV_NS + "Entity",
-        BOS_NS + "ContextCut": PROV_NS + "Entity",
-        BOS_NS + "RelationClaim": PROV_NS + "Entity",
-        # agents
-        PROV_NS + "Person": PROV_NS + "Agent",
-        PROV_NS + "SoftwareAgent": PROV_NS + "Agent",
-        PROV_NS + "Organization": PROV_NS + "Agent",
-    }
+    PROFILE_CLASSES = SHAPES["classes"]
+    PROV_SIGNATURES = {k: tuple(v) for k, v in SHAPES["predicates"].items()}
+    DISJOINT_PAIRS = [tuple(p) for p in SHAPES["disjoint_pairs"]]
+    ROOT_KINDS = {"http://www.w3.org/ns/prov#Activity": "activity",
+                  "http://www.w3.org/ns/prov#Entity": "entity",
+                  "http://www.w3.org/ns/prov#Agent": "agent",
+                  "http://www.w3.org/ns/prov#Influence": "influence"}
 
     def _kind_of_class(cls):
         """Transitive closure to a root kind; None for unknown classes."""
@@ -1791,15 +1759,6 @@ def run_vectors():
                 return None
         return None
 
-    PROV_SIGNATURES = {
-        PROV_NS + "used":              ("activity", "entity"),
-        PROV_NS + "wasInformedBy":     ("activity", "activity"),
-        PROV_NS + "generated":         ("activity", "entity"),
-        PROV_NS + "wasGeneratedBy":    ("entity",   "activity"),
-        PROV_NS + "wasAssociatedWith": ("activity", "agent"),
-        PROV_NS + "wasAttributedTo":   ("entity",   "agent"),
-        PROV_NS + "specializationOf":  ("entity",   "entity"),
-    }
     _TERM = re.compile(r'<([^>]*)>|"((?:[^"\\]|\\.)*)"(?:\^\^<[^>]*>)?')
 
     def _parse_nquads(nquads):
@@ -1832,27 +1791,24 @@ def run_vectors():
                     kinds.setdefault(subj, set()).add(kind)
 
         bad = set()
-        # Disjointness is decided FIRST, over the closure — but only for the
-        # pairs PROV-O actually declares disjoint. `prov:Activity` is
-        # disjoint with `prov:Entity`; an Agent may perfectly well also be an
-        # Entity, and PROV-O's own wasAssociatedWith example types its agent
-        # as Person, Agent AND Entity. Rejecting every multi-kind node
-        # rejected normative PROV.
+        # Disjointness first, over the closure, and only for the pairs PROV-O
+        # actually declares: Activity ⟂ Entity. An Agent may also be an
+        # Entity — PROV-O's own wasAssociatedWith example types its agent as
+        # Person, Agent AND Entity.
         for node, have in kinds.items():
             for a, b in DISJOINT_PAIRS:
                 if a in have and b in have:
                     bad.add(("disjoint", "%s+%s" % (a, b), node))
 
         def _bad(node, is_iri, want):
+            if want == "any":
+                return not is_iri              # only literals are excluded
             if not is_iri:
                 return True                    # a literal is never a PROV node
             have = kinds.get(node, set())
             if not have:
                 return want != "entity"        # untyped nodes are Entities
-            # after the real disjoint pairs are settled, a position asks only
-            # whether the required kind is present: a legal Agent∩Entity node
-            # satisfies both an Agent and an Entity position
-            return want not in have
+            return want not in have            # presence, after disjointness
 
         for terms in quads:
             (subj, s_iri), (pred, _p), (obj, o_iri) = terms[0], terms[1], terms[2]
@@ -1954,6 +1910,40 @@ def run_vectors():
     sm.check_true("a node typed Activity AND Entity is rejected outright",
                   lambda: ("disjoint", "activity+entity", "urn:x")
                   in _prov_violations(_both))
+
+    # target-profile predicates the MVP does not emit are still validated
+    for label, graph, expect in [
+        ("wasDerivedFrom activity->activity", _nq(
+            "<urn:a> %s <http://www.w3.org/ns/prov#Activity> ." % T,
+            "<urn:b> %s <http://www.w3.org/ns/prov#Activity> ." % T,
+            "<urn:a> <http://www.w3.org/ns/prov#wasDerivedFrom> <urn:b> ."), True),
+        ("wasInvalidatedBy entity->entity", _nq(
+            "<urn:a> %s <http://www.w3.org/ns/prov#Entity> ." % T,
+            "<urn:b> %s <http://www.w3.org/ns/prov#Entity> ." % T,
+            "<urn:a> <http://www.w3.org/ns/prov#wasInvalidatedBy> <urn:b> ."), True),
+        ("qualifiedUsage with an entity subject", _nq(
+            "<urn:a> %s <http://www.w3.org/ns/prov#Entity> ." % T,
+            "<urn:u> %s <http://www.w3.org/ns/prov#Usage> ." % T,
+            "<urn:a> <http://www.w3.org/ns/prov#qualifiedUsage> <urn:u> ."), True),
+        ("qualifiedUsage done correctly", _nq(
+            "<urn:act> %s <http://www.w3.org/ns/prov#Activity> ." % T,
+            "<urn:u> %s <http://www.w3.org/ns/prov#Usage> ." % T,
+            "<urn:act> <http://www.w3.org/ns/prov#qualifiedUsage> <urn:u> ."), False),
+        ("hadPlan from an association to a plan", _nq(
+            "<urn:assoc> %s <http://www.w3.org/ns/prov#Association> ." % T,
+            "<urn:plan> %s <http://www.w3.org/ns/prov#Plan> ." % T,
+            "<urn:assoc> <http://www.w3.org/ns/prov#hadPlan> <urn:plan> ."), False),
+    ]:
+        found = _prov_violations(graph)
+        sm.check_equal("target predicate: %s" % label, bool(found), expect)
+
+    # the MVP subset is declared in the shapes file, and it must be honest
+    sm.check_true("declared MVP predicates are a subset of the target set",
+                  lambda: set(SHAPES["mvp_predicates"]) <= set(PROV_SIGNATURES))
+    _emitted_preds = {terms[1][0] for terms in _parse_nquads(result["nquads"])
+                      if terms[1][0].startswith("http://www.w3.org/ns/prov#")}
+    sm.check_equal("what the projector actually emits matches that declaration",
+                   sorted(_emitted_preds - set(SHAPES["mvp_predicates"])), [])
 
     # PROV-O's own normative wasAssociatedWith example: the agent is typed
     # Person, Agent AND Entity. A guard that rejects every multi-kind node

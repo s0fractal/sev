@@ -1,0 +1,71 @@
+{
+  "shapes": "sev.prov-shapes@v0",
+  "note": "Machine-readable endpoint shapes for the FULL sev@v0 target profile. The class hierarchy and the predicate signatures live here together, so a guard cannot carry a complete class registry beside an MVP-only predicate list. Language-neutral by design: a second implementation reads this file, not the Python.",
+  "kinds": ["activity", "entity", "agent", "influence", "any"],
+  "disjoint_pairs": [["activity", "entity"]],
+  "disjoint_note": "PROV-O declares exactly one disjointness axiom among the roots: prov:Activity owl:disjointWith prov:Entity. An Agent may also be an Entity (see PROV-O's normative wasAssociatedWith example, which types its agent as Person, Agent and Entity).",
+  "classes": {
+    "http://www.w3.org/ns/prov#Activity": null,
+    "http://www.w3.org/ns/prov#Entity": null,
+    "http://www.w3.org/ns/prov#Agent": null,
+    "http://www.w3.org/ns/prov#Influence": null,
+
+    "https://s0fractal.dev/ns/sigma#CheckRun": "http://www.w3.org/ns/prov#Activity",
+    "https://s0fractal.dev/ns/wrt#Filing": "http://www.w3.org/ns/prov#Activity",
+    "https://s0fractal.dev/ns/wrt#Adjudication": "https://s0fractal.dev/ns/wrt#Filing",
+    "https://s0fractal.dev/ns/sev#VerificationActivity": "http://www.w3.org/ns/prov#Activity",
+    "https://github.com/s0fractal/oaip/ns#Execution": "http://www.w3.org/ns/prov#Activity",
+    "https://github.com/s0fractal/oaip/ns#Validation": "http://www.w3.org/ns/prov#Activity",
+    "https://s0fractal.dev/ns/bos#Trajectory": "http://www.w3.org/ns/prov#Activity",
+
+    "http://www.w3.org/ns/prov#Bundle": "http://www.w3.org/ns/prov#Entity",
+    "http://www.w3.org/ns/prov#Plan": "http://www.w3.org/ns/prov#Entity",
+    "https://s0fractal.dev/ns/wrt#Warrant": "http://www.w3.org/ns/prov#Entity",
+    "https://s0fractal.dev/ns/wrt#Reason": "http://www.w3.org/ns/prov#Entity",
+    "https://s0fractal.dev/ns/wrt#Signature": "http://www.w3.org/ns/prov#Entity",
+    "https://s0fractal.dev/ns/sev#Source": "http://www.w3.org/ns/prov#Entity",
+    "https://s0fractal.dev/ns/sev#ExecutionAssessment": "http://www.w3.org/ns/prov#Entity",
+    "https://s0fractal.dev/ns/sev#VerificationReceipt": "http://www.w3.org/ns/prov#Entity",
+    "https://github.com/s0fractal/oaip/ns#Intent": "http://www.w3.org/ns/prov#Entity",
+    "https://github.com/s0fractal/oaip/ns#ClaimCandidate": "http://www.w3.org/ns/prov#Entity",
+    "https://s0fractal.dev/ns/bos#Assessment": "http://www.w3.org/ns/prov#Entity",
+    "https://s0fractal.dev/ns/bos#ContextCut": "http://www.w3.org/ns/prov#Entity",
+    "https://s0fractal.dev/ns/bos#RelationClaim": "http://www.w3.org/ns/prov#Entity",
+
+    "http://www.w3.org/ns/prov#Person": "http://www.w3.org/ns/prov#Agent",
+    "http://www.w3.org/ns/prov#SoftwareAgent": "http://www.w3.org/ns/prov#Agent",
+    "http://www.w3.org/ns/prov#Organization": "http://www.w3.org/ns/prov#Agent",
+
+    "http://www.w3.org/ns/prov#Usage": "http://www.w3.org/ns/prov#Influence",
+    "http://www.w3.org/ns/prov#Association": "http://www.w3.org/ns/prov#Influence",
+    "http://www.w3.org/ns/prov#Attribution": "http://www.w3.org/ns/prov#Influence"
+  },
+  "predicates": {
+    "http://www.w3.org/ns/prov#used": ["activity", "entity"],
+    "http://www.w3.org/ns/prov#wasInformedBy": ["activity", "activity"],
+    "http://www.w3.org/ns/prov#generated": ["activity", "entity"],
+    "http://www.w3.org/ns/prov#wasGeneratedBy": ["entity", "activity"],
+    "http://www.w3.org/ns/prov#wasInvalidatedBy": ["entity", "activity"],
+    "http://www.w3.org/ns/prov#wasDerivedFrom": ["entity", "entity"],
+    "http://www.w3.org/ns/prov#specializationOf": ["entity", "entity"],
+    "http://www.w3.org/ns/prov#wasAssociatedWith": ["activity", "agent"],
+    "http://www.w3.org/ns/prov#wasAttributedTo": ["entity", "agent"],
+    "http://www.w3.org/ns/prov#actedOnBehalfOf": ["agent", "agent"],
+    "http://www.w3.org/ns/prov#qualifiedUsage": ["activity", "influence"],
+    "http://www.w3.org/ns/prov#qualifiedAssociation": ["activity", "influence"],
+    "http://www.w3.org/ns/prov#qualifiedAttribution": ["entity", "influence"],
+    "http://www.w3.org/ns/prov#hadPlan": ["influence", "entity"],
+    "http://www.w3.org/ns/prov#hadMember": ["entity", "entity"],
+    "http://www.w3.org/ns/prov#wasInfluencedBy": ["any", "any"]
+  },
+  "predicate_notes": {
+    "wasInfluencedBy": "PROV-O leaves this unconstrained across the three roots; modelled as any->any rather than guessed."
+  },
+  "mvp_predicates": [
+    "http://www.w3.org/ns/prov#used",
+    "http://www.w3.org/ns/prov#generated",
+    "http://www.w3.org/ns/prov#wasGeneratedBy",
+    "http://www.w3.org/ns/prov#specializationOf"
+  ],
+  "mvp_note": "The subset the current projector can emit. The guard validates every predicate in `predicates` when it appears; this list exists so a reader can tell MVP coverage from target coverage without reading the projector."
+}

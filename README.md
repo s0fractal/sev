@@ -55,6 +55,22 @@ cross-implementation parity is claimed. Where prose and model disagree, the
 disagreement is a bug in one of them and a conformance vector waiting to be
 written.
 
+## Freeze criteria, per artifact
+
+A single shared "no P1 anywhere" gate would let a finding in a future
+OAIP/BOS mapping block a snapshot core that has been stable for a dozen
+rounds. The criteria are therefore split, and each artifact freezes on its
+own clean round:
+
+| Artifact | Scope | Status |
+|---|---|---|
+| `ecosystem.snapshot@v0` + `warrant.verification-receipt@v0` core | sealed bundle, subroot descriptors, receipt core invariants, envelope binding | not frozen — freeze candidates named in the spec and proposal |
+| MVP projector | what `model/sev_projector.py` actually emits, per `mvp_predicates` in the shapes file | not frozen |
+| Full `sev@v0` target profile | every class and predicate in `conformance/prov-shapes.json`, including the OAIP/BOS quadrants | not frozen, and expected to move longest |
+
+A round is clean **for an artifact** when it produces no P1 against that
+artifact. Rounds are still adversarial and still run against an exact SHA.
+
 ## Ownership boundary
 
 `proposals/WARRANT-VERIFICATION-RECEIPT.md` is an **upstream proposal**:

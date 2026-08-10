@@ -41,3 +41,4 @@ round without a SHA is invalid.
 | 6r | 2026-08-10 | Codex | AMEND | `98544f2` |
 | 6s | 2026-08-10 | Codex | AMEND | `fc69b98` |
 | 6t | 2026-08-10 | Codex | AMEND | `0050042` |
+| 6u | 2026-08-10 | Codex | AMEND | `4c2bfea` |

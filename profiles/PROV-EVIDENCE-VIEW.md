@@ -537,28 +537,28 @@ reproduced countervector:
   kind is *present* — a legal `Agent ∩ Entity` node satisfies both an Agent
   and an Entity position. Treating all three roots as mutually disjoint, or
   demanding an exact single kind, rejects normative PROV.
-- **The conformance guard is a type-closure machine, not a membership
-  list.** It carries one machine-readable class hierarchy for the *whole*
-  target profile (`class → parent`, roots being the three disjoint PROV
-  kinds), computes the transitive closure of each node's declared types, and
-  **decides disjointness first**: a node typed both `prov:Activity` and
-  `prov:Entity` is rejected outright rather than excused because the wanted
-  kind happens to be among its types. A position then requires *exactly* the
-  wanted kind. A hand-kept list produced both failures at once — that false
-  negative, and false positives against valid target graphs using
-  `oaip:Execution`, `oaip:Validation`, `bos:Trajectory` or
-  `wrt:Adjudication`. The MVP guard is the same machine restricted to what
-  the projector actually emits, and a vector asserts every class it emits is
-  registered.
-- **The conformance guard must be total over its own type registry.** It
-  classifies nodes through a closed registry that includes the PROV **base**
-  classes (`prov:Activity`, `prov:Entity`, `prov:Agent`) alongside every
-  subclass this profile declares — recognising only `sigma:CheckRun` and
-  `wrt:Filing` as activities let an explicit `prov:Activity`, or the
-  profile's own `sev:VerificationActivity`, stand in an Entity position
-  although those classes are disjoint. Agent positions are enforced, and a
-  **literal is never a PROV node** in any object-property position. The
-  guard parses N-Quads structurally rather than splitting on spaces.
+- **The conformance guard is a type-closure machine reading a data
+  artifact.** Classes (`class → parent`), the disjointness axioms and the
+  predicate endpoint kinds live together in `conformance/prov-shapes.json`,
+  not in code — a complete class registry beside an MVP-only predicate list
+  is the failure this split exists to prevent. The guard resolves each
+  node's declared types through their transitive closure, decides
+  **disjointness first** over the declared pairs, and then asks whether a
+  position's required kind is *present*. Untyped nodes are Entities; a
+  literal is never a PROV node in any object-property position; N-Quads is
+  parsed structurally rather than split on spaces. A hand-kept list
+  previously produced both a false negative (`Activity ∩ Entity` accepted)
+  and false positives (valid graphs using `oaip:Execution`,
+  `oaip:Validation`, `bos:Trajectory`, `wrt:Adjudication` rejected).
+
+  **Target coverage vs MVP coverage are named, not conflated.** The shapes
+  file carries every target predicate — including ones the current MVP never
+  emits (`wasDerivedFrom`, `wasInvalidatedBy`, `qualifiedUsage`,
+  `qualifiedAssociation`, `hadPlan`, `actedOnBehalfOf`, `hadMember`) — and
+  separately declares `mvp_predicates`, the subset this projector can
+  produce. Vectors assert that the declared subset is genuinely a subset and
+  that the projector emits nothing outside it.
+
 - **PROV constrains both ends of a relation.** `prov:wasInformedBy` has an
   Activity **range** as well as domain, so pointing it at a Warrant record
   entailed that the record was an Activity. A run that consumed the record's
