@@ -45,8 +45,9 @@ implications** and a **total reason-outcome sum type** (both executable in
 `model/snapshot_model.py: validate_receipt_core`), multiset sum notation
 (`⊎`, not `∪`), and a mandatory **semantic role check** of the warrant-slot
 descriptor including non-null `spec_digest`. Companions:
-`ECOSYSTEM-SNAPSHOT.md` (rev 3), `PROV-EVIDENCE-VIEW.md` (sev),
-`model/snapshot_model.py` (v2).
+`ECOSYSTEM-SNAPSHOT.md`, `PROV-EVIDENCE-VIEW.md`, `model/snapshot_model.py`.
+*(Companion revisions are deliberately not pinned here: like the section
+numbers, they decay — check each document's own header.)*
 
 ## Scope rule (unchanged)
 

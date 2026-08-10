@@ -5,7 +5,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: snapshot model (56 vectors, exit status is the verdict)
+      - name: snapshot model (exit status is the verdict)
         run: python3 model/snapshot_model.py
       - name: sev projector MVP (end-to-end, cross-process determinism)
         run: python3 model/sev_projector.py

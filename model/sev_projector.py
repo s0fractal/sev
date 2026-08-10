@@ -86,7 +86,11 @@ class Graph:
         self.quads.add(line)
 
     def nquads(self) -> bytes:
-        return ("\n".join(sorted(self.quads)) + "\n").encode("utf-8")
+        # quad lines embed literals that may carry astral characters, and
+        # graph_digest binds the resulting byte order — so the same UTF-16
+        # comparator the format uses everywhere else
+        return ("\n".join(sorted(self.quads, key=sm.path_sort_key))
+                + "\n").encode("utf-8")
 
 
 # ------------------------------------------------------------- IRI minting
@@ -353,8 +357,12 @@ def project(snapshot, receipt, cas) -> tuple:
                             "tool_digest": tool}}
 
     receipted = {core["subroot_descriptor_digest"]}
-    unjudged = sorted(w["protocol"] for w in snapshot["subroots"]
-                      if w["digest"] not in receipted)
+    # UTF-16 order, like every other ordering in this format: codepoint
+    # sorting disagrees on astral-vs-BMP, and this list is JCS-serialized
+    # into the view manifest and joined into the L-UNJUDGED note, so two
+    # honest implementations would emit different manifest digests
+    unjudged = sorted((w["protocol"] for w in snapshot["subroots"]
+                       if w["digest"] not in receipted), key=sm.path_sort_key)
 
     # What this MVP does NOT emit. Declared machine-readably and only when
     # the data actually exists, because a loss manifest that describes
@@ -1970,6 +1978,45 @@ def run_vectors():
     sm.check_true("a fabricated unreadable record cannot vanish from the graph",
                   lambda: resLoad is None
                   and any(x["code"] == "LOADED_MISREPORTED" for x in fLoad))
+
+    # every ordering in the format is UTF-16, including manifest lists and
+    # quad lines — codepoint order disagrees on astral-vs-BMP and both feed
+    # digests
+    astral, bmp = "\U00010000", "\ue000"
+    sm.check_true("codepoint order really disagrees (the trap)",
+                  lambda: sorted([astral, bmp]) == [bmp, astral])
+    # a REAL projection carrying two unreceipted subroots with astral names
+    snapO2, receiptO2, casO2 = ski_fixture()
+    base_desc = {k: v for k, v in snapO2["subroots"][0].items() if k != "digest"}
+    extra = []
+    for name, path in ((astral, ".a/"), (bmp, ".b/")):
+        files = {path + "x": name.encode()}
+        casO2.update({sm.sha256_hex(v): v for v in files.values()})
+        extra.append(sm.subroot_descriptor(
+            name, {"name": name, "version": "0.4", "spec_digest": None},
+            path, sm.seal_universe(files)))
+    snapO3 = sm.snapshot_object([base_desc] + extra, [])
+    resO3, fO3 = project(snapO3, receiptO2, casO2)
+    sm.check_equal("astral subroot names project cleanly", fO3, [])
+    sm.check_equal("unjudged_subroots is UTF-16 ordered in the manifest",
+                   resO3["view_manifest"]["unjudged_subroots"], [astral, bmp])
+    g_probe = Graph()
+    g_probe.add("urn:s", SEV + "path", _lit(bmp))
+    g_probe.add("urn:s", SEV + "path", _lit(astral))
+    lines = g_probe.nquads().decode().splitlines()
+    sm.check_equal("quad ordering is UTF-16 too",
+                   lines, sorted(lines, key=sm.path_sort_key))
+
+    # the honesty sentence must not carry a hardcoded count that can rot
+    _root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+    _stale = []
+    for rel in ("README.md", ".github/workflows/model.yml"):
+        with open(os.path.join(_root, rel)) as fh:
+            for i, line in enumerate(fh, 1):
+                if re.search(r"\b\d+\s+vectors?\b", line):
+                    _stale.append("%s:%d" % (rel, i))
+    sm.check_equal("no hardcoded vector count can go stale in prose or CI",
+                   _stale, [])
 
     # the MVP inherits the core rule: no evidence resolver, no projection
     snNo, rcNo, _csNo = ski_fixture()

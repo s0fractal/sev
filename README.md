@@ -39,7 +39,7 @@ Sealed Ecosystem Bundle  (ecosystem.snapshot@v0)
 ## Run
 
 ```bash
-python3 model/snapshot_model.py   # 56 vectors; exit status is the verdict
+python3 model/snapshot_model.py   # exit status is the verdict
 python3 model/sev_projector.py    # end-to-end projection, cross-process determinism
 python3 conformance/replay.py     # language-neutral fixture replay
 ```
@@ -47,7 +47,9 @@ python3 conformance/replay.py     # language-neutral fixture replay
 CI (`.github/workflows/model.yml`) runs all three on every push and PR —
 exit-status honesty is a gate, not a habit.
 
-The model passes its current 56 vectors. That means exactly: *56 stated
+The suites pass every vector they carry, and each prints its own count when
+run — deliberately not repeated here, because a number in prose rots while
+the honesty sentence it supports stays. That claim is exactly: *the stated
 claims are checked honestly* (the harness distinguishes `True` from truthy,
 requires named refusal codes, and self-tests in a subprocess). It does NOT
 mean the full prose contract is covered, and no independent approval or

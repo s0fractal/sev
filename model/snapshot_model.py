@@ -71,7 +71,9 @@ POLICY_KEYS = {"policy", "threshold_satisfied"}
 
 # ---------------------------------------------------------------- JCS subset
 
-def jcs(value):
+def jcs(value, _depth=0):
+    if _depth > MAX_FREEZE_DEPTH:
+        raise ValueError("over depth budget")
     if isinstance(value, bool) or value is None:
         return b"true" if value is True else (b"false" if value is False else b"null")
     if isinstance(value, int):
@@ -83,14 +85,14 @@ def jcs(value):
     if isinstance(value, str):
         return json.dumps(value, ensure_ascii=False).encode("utf-8", "surrogatepass")
     if isinstance(value, list):
-        return b"[" + b",".join(jcs(v) for v in value) + b"]"
+        return b"[" + b",".join(jcs(v, _depth + 1) for v in value) + b"]"
     if isinstance(value, dict):
         items = []
         for k in sorted(value.keys(), key=lambda s: s.encode("utf-16-be", "surrogatepass")):
             if not isinstance(k, str):
                 raise ValueError("non-string key")
             items.append(json.dumps(k, ensure_ascii=False).encode("utf-8", "surrogatepass")
-                         + b":" + jcs(value[k]))
+                         + b":" + jcs(value[k], _depth + 1))
         return b"{" + b",".join(items) + b"}"
     raise ValueError("unsupported type")
 
@@ -172,20 +174,42 @@ def parse_strict(raw) -> tuple:
     except _DupKey:
         _f(f, "DUPLICATE_MEMBER", "/")
         return None, f
+    except RecursionError:
+        # The byte layer needs the depth bound the freeze layer already has:
+        # `[`*500 blew the stack out of the "total" composed verdict on
+        # hostile evidence bytes (Kimi round 7). Nesting deeper than the
+        # format admits is a refusal, not a crash.
+        #
+        # Unisolatable on this interpreter and labelled rather than counted:
+        # CPython's C scanner does not raise here, so the later jcs depth
+        # budget catches the same inputs first. Kept because a pure-Python
+        # json fallback or another build DOES raise at this exact point —
+        # the coincidence is a property of one interpreter, not of the
+        # format.
+        _f(f, "OVER_DEPTH", "/")
+        return None, f
     except ValueError as exc:
         _f(f, "NOT_I_JSON" if str(exc) in ("constant", "float") else "NOT_JSON", "/")
         return None, f
     if text[end:].strip("\r\n\t "):
         _f(f, "TRAILING_DATA", "/")
         return None, f
-    if _scan_surrogates(obj):
-        _f(f, "LONE_SURROGATE", "/")
+    try:
+        if _scan_surrogates(obj):
+            _f(f, "LONE_SURROGATE", "/")
+            return None, f
+    except RecursionError:
+        _f(f, "OVER_DEPTH", "/")
         return None, f
     try:
         if jcs(obj) != raw:
             _f(f, "NOT_CANONICAL", "/")
-    except ValueError:
-        _f(f, "NOT_I_JSON", "/")
+    except RecursionError:
+        _f(f, "OVER_DEPTH", "/")
+        return None, f
+    except ValueError as exc:
+        _f(f, "OVER_DEPTH" if "depth" in str(exc) else "NOT_I_JSON", "/")
+        return None, f
     return obj, f
 
 
@@ -1607,6 +1631,17 @@ def run_vectors():
         obj, f = parse_strict(raw)
         check_has("parse_strict refuses %s" % code, f, code)
 
+    # the byte layer is depth-bounded, like the freeze layer
+    check_equal("deeply nested JSON refuses instead of crashing",
+                [x["code"] for x in parse_strict(b"[" * 500 + b"]" * 500)[1]],
+                ["OVER_DEPTH"])
+    check_equal("...and so does a deep object",
+                [x["code"] for x in parse_strict(
+                    b'{"a":' * 300 + b"1" + b"}" * 300)[1]],
+                ["OVER_DEPTH"])
+    check_true("jcs itself refuses over-deep values",
+               lambda: _ve(lambda: jcs(_deep_list(MAX_FREEZE_DEPTH + 5))))
+
     # --- total validators on hostile shapes (Codex round-5 crashers)
     hostile = [None, 7, "x", [], [7],
                {"snapshot": "ecosystem.snapshot@v0", "bundle_root": None,
@@ -2052,6 +2087,16 @@ def run_vectors():
             parse_strict(bytes(rng.randrange(256) for _ in range(rng.randrange(40))))
         return True
     check_true("fuzz: 300 hostile shapes + 100 random byte strings, no exceptions", _fuzz)
+
+
+def _deep_list(depth):
+    out = []
+    cur = out
+    for _ in range(depth):
+        nxt = []
+        cur.append(nxt)
+        cur = nxt
+    return out
 
 
 def _ve(fn):

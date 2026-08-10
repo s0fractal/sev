@@ -31,6 +31,7 @@ round without a SHA is invalid.
 | 6h | 2026-08-10 | **Claude (author)** | **self-review — NOT a gate** | `39bda50` |
 | 6i | 2026-08-10 | Codex | AMEND | `d8f33aa` |
 | 6j | 2026-08-10 | Codex | AMEND | `2fb7c0d` |
+| 7 | 2026-08-10 | Kimi | AMEND | `18283bf` |
 | 6k | 2026-08-10 | Codex | AMEND | `18283bf` |
 | 6l | 2026-08-10 | Codex | AMEND | `2df4d0b` |
 | 6m | 2026-08-10 | Codex | AMEND | `84b6d06` |
@@ -46,3 +47,4 @@ round without a SHA is invalid.
 | 6w | 2026-08-10 | Codex | AMEND (core only; MVP + profile not reviewed) | `8887085` |
 | 6x | 2026-08-10 | Codex | AMEND (core + MVP inherited; profile out of scope) | `85269c0` |
 | 6y | 2026-08-10 | Codex | AMEND (core + MVP inherited; profile out of scope) | `f705b56` |
+| 7 | 2026-08-10 | **Kimi** | AMEND — 2 P1, 4 P2 | `18283bf` (an earlier SHA; findings re-verified against `d28abd2` before closing) |

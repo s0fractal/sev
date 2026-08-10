@@ -1,8 +1,8 @@
 # Profile: PROV Evidence View (sev@v0) — rev 2.2
 
 **Status:** DRAFT rev 2.2, non-normative, unplaced, research draft — **not
-adoptable until `warrant.verification-receipt@v0` (rev 3),
-`ecosystem.snapshot@v0` (rev 2), AND per-protocol OAIP/BOS validation
+adoptable until `warrant.verification-receipt@v0`,
+`ecosystem.snapshot@v0`, AND per-protocol OAIP/BOS validation
 receipts exist**. The blocking is per-quadrant: a Warrant receipt licenses
 projecting the Warrant quadrant only; OAIP and BOS quadrants stay
 L-UNJUDGED (bytes pinned, nothing asserted) until their own protocols
