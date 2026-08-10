@@ -1,6 +1,13 @@
-# Round 15 closure — target `c9ff62a` (PR #5), verdict AMEND
+# Round 15 closure — Codex, target `c9ff62a` (PR #5), verdict AMEND
 
-Reviewer: **2 P1 + 1 P2**, all against the body-mapping branch. Every finding
+> **Attribution correction (round 16 P2).** This file and the ledger row
+> first named the reviewer as Kimi. The round-15 findings were **Codex's**
+> exact-SHA review. The delivering message carried no attribution and I
+> filled one in from the recent pattern instead of leaving it unnamed —
+> asserting provenance I did not have, in the ledger whose whole purpose
+> is provenance. Corrected here and in `reviews/README.md`.
+
+Reviewer: **Codex — 2 P1 + 1 P2**, all against the body-mapping branch. Every finding
 reproduced by execution before any change. Closed on
 `author/body-mapping`; **merge and re-gate remain the reviewer's call.**
 PR #6 stays untouched — its base failed, and it is not gated until this is.
@@ -123,3 +130,54 @@ honest. Live store: 81 sources, 1081 quads, 0 errors / 16 warnings.
 
 **Not done:** no merge, no freeze, no work on PR #6 until this branch is
 re-gated clean.
+
+---
+
+# Round 16 closure — Codex, target `c701d91` (PR #5), verdict AMEND
+
+**1 P1 + 1 P2.** Both reproduced before any change.
+
+## P1 — `wrt:claimedActor` disagreed with the normative profile
+
+Confirmed by reading both sides: the promotion table declared
+`wrt:claimedActor` an **IRI**, the identity registry defines
+`urn:wrt:actor:<pct-encoded actor string>`, and the projector emits
+`"signer@example"` as a **literal**.
+
+**The profile is what changes, per the reviewer's recommendation, and the
+code was right.** Before a `valid && bound` signature, `body.actor.id` is a
+claim the record makes, not an identity the bundle can name. Minting
+`urn:wrt:actor:…` for it would let any consumer merge two records that
+merely assert the same string into one referent — on the strength of
+nothing. That is the same principle PR #6 builds its attribution rule on, so
+the two now agree instead of contradicting: the weak default is a literal,
+and the actor IRI belongs to the promotion path alone.
+
+Both halves are vectored — `claimedActor` must be a literal, and no
+`urn:wrt:actor:`, `prov:wasAssociatedWith` or `prov:Agent` may appear
+without a binding. Three mutations (actor as IRI, actor IRI without
+binding, agent without binding) each fail the suites.
+
+**Known consequence, flagged not fixed.** PR #6 mints
+`urn:sev:agent:<sha256(actor)>` for its attribution path, while the registry
+names `urn:wrt:actor:<pct-encoded>`. That divergence is real and is #6's to
+close; it is left untouched here because #6 is not gated and this branch was
+to receive two narrow changes only.
+
+## P2 — the ledger misattributed round 15
+
+Correct, and it is my error. The delivering message carried no attribution
+and I filled one in from the recent pattern rather than leaving it unnamed —
+**asserting provenance I did not have, in the ledger whose entire purpose is
+provenance.** Ledger row and this file both now name Codex, and the
+correction is recorded above rather than applied silently.
+
+The general lesson is recorded too: an unattributed round must be filed
+unattributed until its reviewer says otherwise. A guess that happens to be
+wrong is indistinguishable, in the file, from a fact.
+
+## State
+
+98 model + 274 projector + 11 fixtures + 29 adapter, all green. Live store
+unchanged: 81 sources, 1081 quads, 0 errors / 16 warnings.
+

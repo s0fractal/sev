@@ -1488,6 +1488,23 @@ def run_vectors():
         return sorted(c for c in res["view_manifest"]["coverage"]["not_emitted"]
                       if c in _MARKERS and _MARKERS[c] in quads)
 
+    # The weak default is a LITERAL, and the actor IRI is minted only on the
+    # promotion path. Before a `valid && bound` signature the body's actor is
+    # a claim the record makes, not an identity the bundle can name: minting
+    # `urn:wrt:actor:…` would let two records that merely assert the same
+    # string be merged into one referent by any consumer, on the strength of
+    # nothing. Round 16 P1 — the profile said IRI, the code emitted a
+    # literal, and the code was right.
+    sm.check_true("claimedActor is a literal, not an IRI",
+                  lambda: any(
+                      ln.split(" ", 2)[2].startswith('"')
+                      for ln in quads.splitlines()
+                      if "wrt#claimedActor" in ln))
+    sm.check_true("...and no actor IRI is minted without a binding",
+                  lambda: "urn:wrt:actor:" not in quads
+                  and "prov#wasAssociatedWith" not in quads
+                  and "prov#Agent" not in quads)
+
     sm.check_equal("coverage never calls an emitted fact un-emitted",
                    _coverage_lies(res_body), [])
     sm.check_true("...while still declaring what is genuinely missing",
