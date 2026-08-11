@@ -116,7 +116,7 @@ literal prose).
 | Warrant blob | `urn:wrt:blob:<sha256>` |
 | Filing activity | `urn:wrt:filing:<entry_digest>` — the digest of the envelope bytes in the snapshot (`sources[].entry_digest`), NOT the WarrantID: the WarrantID identifies the body, while the envelope grows under co-signatures; each sealed envelope occurrence is one filing |
 | Signature | `urn:wrt:sig:<sha256(JCS({actor,key,sig}))>:<multiplicity>` |
-| Actor | `urn:wrt:actor:<pct-encoded actor string>` |
+| Actor | `urn:wrt:actor:<pct-encoded actor string>` — **minted only on the promotion path**. Before a `valid && bound` signature, the body's actor is a claim the record makes, not an identity the bundle can name; giving it an IRI would let two records that merely assert the same string be merged into one referent by any consumer, on the strength of nothing. The weak default is therefore a literal (rev 5) |
 | Σ-GLYPH node | `urn:sigma:node:<NodeHash>` |
 | Source occurrence | `urn:sev:source:<sha256(subroot_descriptor_digest ‖ 0x00 ‖ path ‖ 0x00 ‖ entry_digest)>` — `sourceKind` is contract-derived, so the occurrence is scoped to the descriptor that derived it |
 | Reason (stable fact of a record) | `urn:wrt:reason:<sha256(WID ‖ 0x00 ‖ JSON-pointer ‖ 0x00 ‖ reason_digest)>` — an Entity. Carries `sev:pointer`, `sigma:runtime`, `sigma:claimedVerdict`, `wrt:checkRef` (literal digest) and, when that blob is sealed in the same subroot, `wrt:checkBlob`. **Never `prov:used`** — that predicate's domain is an Activity |
@@ -171,7 +171,7 @@ PROV relation only when the receipt licenses it:
 
 | Weak default (always emitted) | Promotes to | Iff the receipt shows |
 |---|---|---|
-| `wrt:claimedActor` (IRI) | `prov:qualifiedAssociation` + `prov:wasAssociatedWith` | at least one signature with `valid:true`, `binding:"bound"`, `actor == body.actor` |
+| `wrt:claimedActor` (**literal** — the `body.actor.id` string verbatim) | `prov:qualifiedAssociation` + `prov:wasAssociatedWith` an `urn:wrt:actor:` IRI | at least one signature with `valid:true`, `binding:"bound"`, `actor == body.actor` |
 | `wrt:declaredTimestamp` (literal from `ts`) | — never — | `ts` is a declared number; nothing proves activity timing |
 | `wrt:prior` (record→record) | `prov:wasDerivedFrom` | — deferred; Warrant defines no semantics for `prior` beyond DAG ancestry, so rev 2 emits only the weak edge (rev 1 emitted both `wasInformedBy` and `wasDerivedFrom`; neither is warranted) |
 | `wrt:Filing ⊑ prov:Activity` (every record) | `wrt:Adjudication ⊑ wrt:Filing` | `decision ∈ {accept, reject, supersede}`; `propose` is not an adjudication (the enum is `propose\|accept\|reject\|supersede`) |
@@ -451,7 +451,8 @@ receipt or snapshot, so a manifest never claims a loss it does not have:
 | L-NOSIG | The receipt carries signature results (validity/binding) and the projection emits no signature nodes at all |
 | L-NOSETTLE | The receipt carries jurisdiction-scoped settlement and the projection emits no settlement nodes at all |
 | L-NOUNCLAIMED | The snapshot pins `unclaimed` members that are not projected |
-| L-NOMAP | The §4.1 record-body mapping (actor, `under`/Plan, subject, evidence, `prior`) is not implemented by this projector |
+| L-NOISSUE | Projected sources carry issues in the receipt and no issue reaches the graph — an unqualified node is therefore not a clean one |
+| L-NOPROMOTE | The §4.1 mapping is emitted at its **weak defaults** (`wrt:claimedActor`, `wrt:underPolicy`); nothing in the receipt licenses promotion to `prov:Agent`, `prov:Association` or `prov:hadPlan`, so none is asserted |
 
 A caveat on an absent fact is worse than silence: it reads as
 "present, with reservations". Hence the split — qualify what is there,
@@ -460,8 +461,10 @@ declare what is not.
 **Every entry is dataset-relative.** This applies to the qualifying codes
 too, not only the `L-NO*` family: `L-REEXEC` only where a check run was
 emitted, `L-SETTLE` only where signature/settlement evidence exists,
-`L-CANON` only where the graph is non-empty, `L-NOMAP` only where a record
-was actually projected. A blob-only subroot therefore carries neither — a
+`L-CANON` only where the graph is non-empty, `L-NOPROMOTE` only where a
+record was actually projected, `L-NOISSUE` only where a PROJECTED source
+carries issues (an excluded source keeps its issues verbatim in the
+exclusion, so claiming the loss for it would qualify a preserved fact). A blob-only subroot therefore carries neither — a
 manifest that listed record, reason and signature losses over a dataset
 holding none of them would be making exactly the claim this section
 forbids.
@@ -567,12 +570,16 @@ reproduced countervector:
   predicate real.
 
   **Target coverage vs MVP coverage are named, not conflated.** The shapes
-  file carries every target predicate — including ones the current MVP never
-  emits (`wasDerivedFrom`, `wasInvalidatedBy`, `qualifiedUsage`,
-  `qualifiedAssociation`, `hadPlan`, `actedOnBehalfOf`, `hadMember`) — and
-  separately declares `mvp_predicates`, the subset this projector can
-  produce. Vectors assert that the declared subset is genuinely a subset and
-  that the projector emits nothing outside it.
+  file carries every target predicate and separately declares
+  `mvp_predicates`, the subset this projector actually produces. **The
+  members of each set are deliberately not listed in this prose**: an
+  earlier revision named `qualifiedUsage` among the predicates the MVP
+  "never emits", and went on saying so after the §4.1 mapping began emitting
+  it — a duplicated list rots the moment the machine-readable one moves.
+  `conformance/prov-shapes.json` is the single source of truth. Vectors
+  assert the declared subset is genuinely a subset of the target set, that
+  the projector emits nothing outside it, **and** that nothing is declared
+  which no fixture emits — the honesty has to hold in both directions.
 
 - **PROV constrains both ends of a relation.** `prov:wasInformedBy` has an
   Activity **range** as well as domain, so pointing it at a Warrant record

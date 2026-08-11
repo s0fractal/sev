@@ -857,6 +857,17 @@ def validate_receipt_core(core, descriptor=None, cas=None, view=None) -> list:
                 because = body_obj.get("because") if isinstance(body_obj, dict) else None
                 view.setdefault("committed", {})[src["path"]] = (
                     json.loads(json.dumps(because)) if isinstance(because, list) else [])
+                # The whole committed body, for the same reason and under the
+                # same rule: a consumer mapping §4.1 (actor, under, subject,
+                # evidence, prior) must read the bytes THIS verdict was
+                # rendered over, never the store again. Deep-copied, so a
+                # consumer cannot reach back through the view and edit what
+                # was judged. This is an output channel only — the verdict
+                # never reads it, which `selftest` asserts by running every
+                # vector with and without a view and comparing findings.
+                view.setdefault("body", {})[src["path"]] = (
+                    json.loads(json.dumps(body_obj))
+                    if isinstance(body_obj, dict) else None)
             if parsed is not None and w is not None:
                 body = parsed.get("body")
                 try:
@@ -2458,6 +2469,91 @@ def _ve(fn):
     return False
 
 
+def view_is_output_only():
+    """The verdict must not depend on whether a view was requested.
+
+    The view exists so consumers read the bytes the verdict was rendered
+    over instead of the store. That makes it an OUTPUT, and the distinction
+    is load-bearing: if any finding ever varied with `view`, the channel
+    would have become an input, and every future extension of it (this round
+    added the committed body for the §4.1 mapping) would be a silent change
+    to a frozen contract. Asserted over a corpus rather than argued.
+    """
+    snap, receipt, cas = _fixture()
+    raw_s, raw_r = jcs(snap), jcs(receipt)
+    corpus = [
+        ("valid", raw_s, raw_r),
+        ("trailing data", raw_s, raw_r + b" x"),
+        ("BOM", b"\xef\xbb\xbf" + raw_s, raw_r),
+        ("truncated receipt", raw_s, raw_r[:-1]),
+        ("receipt is not an object", raw_s, b"[]"),
+        ("duplicate member", raw_s, raw_r[:-1] + b',"core":1}'),
+        ("empty receipt", raw_s, b""),
+        ("snapshot is a scalar", b"7", raw_r),
+        ("lone surrogate", raw_s, raw_r[:-1] + b',"x":"\\ud800"}'),
+    ]
+    # Byte-boundary refusals return before the deep validator ever runs, and
+    # they yield one finding each — so a corpus of only those tests almost
+    # nothing about view-independence where it matters, and cannot observe
+    # ORDER at all. These are structurally valid documents with semantic
+    # defects: they reach `_verdict_over_objects` and produce several
+    # findings apiece.
+    def _semantic(mutate):
+        obj = json.loads(raw_r.decode("utf-8"))
+        mutate(obj)
+        return jcs(obj)
+
+    def _break_counts(o):
+        o["core"]["errors"] = 99
+        o["core"]["warnings"] = 99
+
+    def _break_source(o):
+        src = [s for s in o["core"]["sources"] if s["kind"] == "record"][0]
+        src["id_sound"] = False
+        src["loaded"] = False
+
+    def _break_reason(o):
+        src = [s for s in o["core"]["sources"] if s.get("reasons")][0]
+        src["reasons"][0]["outcome"]["re_execution"] = "not-a-state"
+        src["reasons"][0]["runtime"] = "nowhere@v9"
+
+    def _break_all(o):
+        _break_counts(o)
+        _break_source(o)
+
+    for label, mutate in (("bad counts", _break_counts),
+                          ("unsound source", _break_source),
+                          ("bad reason", _break_reason),
+                          ("several at once", _break_all)):
+        corpus.append(("semantic: " + label, raw_s, _semantic(mutate)))
+    # Compared as JCS BYTES over the ordered finding list, not as a list of
+    # codes. A finding is `code`, `severity` and `at`, and comparing only the
+    # first would let ERR→WARN or one locator→another pass unnoticed — a
+    # guard covering less than it claims, which is the exact defect it exists
+    # to prevent (round 15 P1). Order is part of the verdict too, so the
+    # lists are not sorted before comparison.
+    for label, s_raw, r_raw in corpus:
+        blind = jcs(verify_receipt_bytes(s_raw, r_raw, cas))
+        sink = {}
+        seeing = jcs(verify_receipt_bytes(s_raw, r_raw, cas, view=sink))
+        check_equal("verdict is view-independent: %s" % label, blind, seeing)
+    # and the channel really does carry the body the mapping needs
+    sink = {}
+    verify_receipt_bytes(raw_s, raw_r, cas, view=sink)
+    bodies = sink.get("body", {})
+    check_true("the view carries the committed body, deep-copied",
+               lambda: any(isinstance(b, dict) and "because" in b
+                           for b in bodies.values()))
+    # The deep copy on that channel is defense in depth, and labelled rather
+    # than counted: the parsed envelope is local to the verdict and discarded
+    # when it returns, so no second reader exists for a caller to corrupt,
+    # and removing the copy changes no test result. A vector asserting "a
+    # later run is unaffected" was written first and DELETED as vacuous — it
+    # passed with the copy and without it, because every run re-parses from
+    # bytes anyway. It guards a future caller that keeps a view alive across
+    # calls, and says so here instead of pretending to be covered.
+
+
 # ------------------------------------------ harness selftest (subprocess)
 
 def harness_selftest():
@@ -2477,6 +2573,7 @@ def harness_selftest():
 
 def main():
     run_vectors()
+    view_is_output_only()
     harness_selftest()
     print()
     if FAILURES:
