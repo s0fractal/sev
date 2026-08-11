@@ -710,10 +710,14 @@ def _project_validated(view, cas) -> tuple:
                                               "nothing grounds the binding, so "
                                               "no agent is minted from it"
                               % ungrounded_bindings))
+    # The wording must be true of EVERY state that lands here — `unverified`
+    # under a non-grounding contract has no grounding contract to be measured
+    # against, so "not both valid and bound under a grounding contract"
+    # described a comparison that never happened (round 22 P1).
     if unattributed_nodes:
         qualified.append(loss("L-UNBOUND", "%d projected signature(s) are not both "
-                                           "valid and bound under a grounding "
-                                           "contract, so no agent is "
+                                           "backed by a valid, grounded bound "
+                                           "association, so no agent is "
                                            "attributed; they carry "
                                            "wrt:claimedSigner instead"
                               % unattributed_nodes))

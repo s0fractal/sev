@@ -116,11 +116,11 @@ literal prose).
 | Warrant blob | `urn:wrt:blob:<sha256>` |
 | Filing activity | `urn:wrt:filing:<entry_digest>` — the digest of the envelope bytes in the snapshot (`sources[].entry_digest`), NOT the WarrantID: the WarrantID identifies the body, while the envelope grows under co-signatures; each sealed envelope occurrence is one filing |
 | Signature (occurrence) | `urn:wrt:sig:<WarrantID>:<sha256(JCS({actor,key,sig}))>:<multiplicity>` — **rev 5 amends this to include the WarrantID.** The digest alone identified the signature BYTES, and the same *invalid* `{actor,key,sig}` can be replayed into several records: without the WID two records shared one node, and each receipt's judgement of it overwrote the other's. Every component stays visible rather than hashed together, so `sig_digest` remains joinable and two implementations emit byte-identical IRIs |
-| Actor | `urn:wrt:actor:<pct-encoded actor string>` — percent-encoding is defined byte-exactly, because "empty safe set" names a *parameter*, not a *contract*: **retain the ASCII unreserved set `A-Z` `a-z` `0-9` `-` `.` `_` `~` literally, and encode every other UTF-8 octet as `%HH` with UPPERCASE hex.** `urllib.parse.quote(safe="")` keeps the unreserved set raw, JavaScript's `encodeURIComponent` additionally keeps `!*'()`, and lowercase `%hh` is equally legal under RFC 3986 — three honest encoders, three different IRIs, and a join that silently finds nothing — **minted only on the promotion path**. Before a `valid && bound` signature, the body's actor is a claim the record makes, not an identity the bundle can name; giving it an IRI would let two records that merely assert the same string be merged into one referent by any consumer, on the strength of nothing. The weak default is therefore a literal (rev 5) |
+| Actor | `urn:wrt:actor:<pct-encoded actor string>` — percent-encoding is defined byte-exactly, because "empty safe set" names a *parameter*, not a *contract*: **retain the ASCII unreserved set `A-Z` `a-z` `0-9` `-` `.` `_` `~` literally, and encode every other UTF-8 octet as `%HH` with UPPERCASE hex.** `urllib.parse.quote(safe="")` keeps the unreserved set raw, JavaScript's `encodeURIComponent` additionally keeps `!*'()`, and lowercase `%hh` is equally legal under RFC 3986 — three honest encoders, three different IRIs, and a join that silently finds nothing — **minted only on the promotion path**, which requires a grounded binding and not merely a bound one. Before a `valid && bound` signature, the body's actor is a claim the record makes, not an identity the bundle can name; giving it an IRI would let two records that merely assert the same string be merged into one referent by any consumer, on the strength of nothing. The weak default is therefore a literal (rev 5) |
 | Σ-GLYPH node | `urn:sigma:node:<NodeHash>` |
 | Source occurrence | `urn:sev:source:<sha256(subroot_descriptor_digest ‖ 0x00 ‖ path ‖ 0x00 ‖ entry_digest)>` — `sourceKind` is contract-derived, so the occurrence is scoped to the descriptor that derived it |
 | Reason (stable fact of a record) | `urn:wrt:reason:<sha256(WID ‖ 0x00 ‖ JSON-pointer ‖ 0x00 ‖ reason_digest)>` — an Entity. Carries `sev:pointer`, `sigma:runtime`, `sigma:claimedVerdict`, `wrt:checkRef` (literal digest) and, when that blob is sealed in the same subroot, `wrt:checkBlob`. **Never `prov:used`** — that predicate's domain is an Activity |
-| Check run (one execution of a reason) | `urn:sigma:run:<sha256(receipt_core_digest ‖ 0x00 ‖ WID ‖ 0x00 ‖ JSON-pointer ‖ 0x00 ‖ reason_digest ‖ 0x00 ‖ semantics_digest)>` — an Activity. Two verifications of the same reason under different declared semantics are two runs; keying on the reason alone fused them once datasets merged, and a named graph scopes statements without localizing IRIs |
+| Check run (one execution of a reason) | `urn:sigma:run:<sha256(judgement_digest ‖ 0x00 ‖ WID ‖ 0x00 ‖ JSON-pointer ‖ 0x00 ‖ reason_digest ‖ 0x00 ‖ semantics_digest)>` — an Activity. Two verifications of the same reason under different declared semantics are two runs; keying on the reason alone fused them once datasets merged, and a named graph scopes statements without localizing IRIs |
 | OAIP record | `urn:oaip:record:<sha256 of JCS-canonical record bytes>` |
 | OAIP blob/artifact | `urn:oaip:blob:<sha256>` |
 | BOS atom (semantic id) | `urn:bos:atom:<pct-encoded bos id>` |
@@ -171,7 +171,7 @@ PROV relation only when the receipt licenses it:
 
 | Weak default (always emitted) | Promotes to | Iff the receipt shows |
 |---|---|---|
-| `wrt:claimedActor` (**literal** — the `body.actor.id` string verbatim) | `prov:qualifiedAssociation` + `prov:wasAssociatedWith` an `urn:wrt:actor:` IRI | at least one signature with `valid:true`, `binding:"bound"`, `actor == body.actor` |
+| `wrt:claimedActor` (**literal** — the `body.actor.id` string verbatim) | `prov:qualifiedAssociation` + `prov:wasAssociatedWith` an `urn:wrt:actor:` IRI | at least one signature with `valid:true`, `binding:"bound"`, `actor == body.actor`, **under a contract that grounds the binding** — see `conformance/signature-promotion.vectors.json` |
 | `wrt:declaredTimestamp` (literal from `ts`) | — never — | `ts` is a declared number; nothing proves activity timing |
 | `wrt:prior` (record→record) | `prov:wasDerivedFrom` | — deferred; Warrant defines no semantics for `prior` beyond DAG ancestry, so rev 2 emits only the weak edge (rev 1 emitted both `wasInformedBy` and `wasDerivedFrom`; neither is warranted) |
 | `wrt:Filing ⊑ prov:Activity` (every record) | `wrt:Adjudication ⊑ wrt:Filing` | `decision ∈ {accept, reject, supersede}`; `propose` is not an adjudication (the enum is `propose\|accept\|reject\|supersede`) |
@@ -194,7 +194,7 @@ deciding into one activity; rev 2 keeps them apart.
 | `because[]` prose | `wrt:prose` literal |
 | `because[]` check | reason-occurrence activity, §4.4 |
 | `prior[]` | `wrt:prior` |
-| `sigs` | `wrt:Signature ⊑ prov:Entity`; `wrt:sigValid`, `wrt:binding` (`bound`/`unbound`/`unverified` — SPEC §5.1's own triple, no invented states) copied from the receipt; `prov:wasAttributedTo` the named agent **only when `valid:true` AND `binding:"bound"`** — validity proves *this key signed this WarrantID*, not *this key belongs to this actor*. **Every weaker state — valid-but-unbound, valid-but-unverified, and invalid — emits `wrt:claimedSigner`** (rev 5 states the complement explicitly: an earlier revision named only the valid-but-unbound case, while the code, the loss table and the shapes note all applied it to the whole complement. Naming an actor an envelope *claims* signed is honest in every one of those states, and the node carries `wrt:sigValid` beside it, so nothing is asserted that the receipt did not report) |
+| `sigs` | `wrt:Signature ⊑ prov:Entity`; `wrt:sigValid`, `wrt:binding` (`bound`/`unbound`/`unverified` — SPEC §5.1's own triple, no invented states) copied from the receipt; `prov:wasAttributedTo` the named agent **only when `valid:true` AND `binding:"bound"` AND the contract grounds the binding** (settlement grade with a pinned trust config; the full matrix is data, in `conformance/signature-promotion.vectors.json`) — validity proves *this key signed this WarrantID*, not *this key belongs to this actor*. **Every weaker state — valid-but-unbound, valid-but-unverified, and invalid — emits `wrt:claimedSigner`** (rev 5 states the complement explicitly: an earlier revision named only the valid-but-unbound case, while the code, the loss table and the shapes note all applied it to the whole complement. Naming an actor an envelope *claims* signed is honest in every one of those states, and the node carries `wrt:sigValid` beside it, so nothing is asserted that the receipt did not report) |
 | settlement / threshold | one skolem `wrt:SettlementStatus` node per `(record, jurisdiction root)` pair with `wrt:jurisdiction`, `wrt:active`, and per-policy `wrt:thresholdSatisfied` — copied from the receipt's scoped `settlement[]`. Never a global boolean: SPEC §9 makes adoption jurisdiction-scoped (active for root A, inactive for root B, same store). The graph never claims to demonstrate quorum (L-THRESH) |
 
 ### 4.2 OAIP → PROV
@@ -356,7 +356,7 @@ partitions by **source assertion bundle**:
   tag is readable rather than only hashed. Holding signature
   validity/binding, re-execution statuses, scoped settlement nodes, and the
   receipt entity, generated by a `sev:VerificationActivity` performed by a
-  `prov:SoftwareAgent`. Keyed by the **core digest, not the snapshot root**:
+  `prov:SoftwareAgent`. Keyed by the **judgement digest, not the snapshot root and not the core digest**:
   base vs settlement grade, different trust roots, or different execution
   policies over the same snapshot are different judgements and must not
   collapse into one graph. **The verifier is not an observer.**
@@ -464,7 +464,7 @@ receipt or snapshot, so a manifest never claims a loss it does not have:
 | L-NOSETTLE | The receipt carries jurisdiction-scoped settlement and the projection emits no settlement nodes at all |
 | L-NOUNCLAIMED | The snapshot pins `unclaimed` members that are not projected |
 | L-NOISSUE | Projected sources carry issues in the receipt and no issue reaches the graph — an unqualified node is therefore not a clean one |
-| L-NOPROMOTE | The **body's** actor and policy stay at their weak defaults (`wrt:claimedActor`, `wrt:underPolicy`): no `prov:Association`/`wasAssociatedWith` for the actor, no `prov:Plan`/`hadPlan` for the policy. **Signature attribution is a separate promotion and may be present** — a `valid && bound` signature does license a `prov:Agent`, so this loss must not deny one the graph already asserts |
+| L-NOPROMOTE | The **body's** actor and policy stay at their weak defaults (`wrt:claimedActor`, `wrt:underPolicy`): no `prov:Association`/`wasAssociatedWith` for the actor, no `prov:Plan`/`hadPlan` for the policy. **Signature attribution is a separate promotion and may be present** — a `valid && bound` signature **under a grounding contract** licenses a `prov:Agent`, so this loss must not deny one the graph already asserts |
 
 A caveat on an absent fact is worse than silence: it reads as
 "present, with reservations". Hence the split — qualify what is there,
@@ -498,7 +498,10 @@ the hash, not the host — and not this graph either."
   "bundle_root": "<hex64 — the ecosystem.snapshot@v0 identity>",
   "receipts": [
     { "protocol": "warrant", "subroot": "<hex64>",
-      "receipt_core_digest": "<hex64>", "grade": "settlement" }
+      "contract": "warrant.verification-receipt@v0 | @v1",
+      "receipt_core_digest": "<hex64 — content identity of the core bytes>",
+      "judgement_digest": "<hex64 — sha256(JCS({receipt: <contract>, core: <core>})); keys the verification graph, the receipt node and run/assessment provenance>",
+      "grade": "settlement" }
   ],
   "unjudged_subroots": ["oaip", "bos"],
   "sources_in_receipts": 14,
@@ -618,7 +621,7 @@ reproduced countervector:
   actually emitted.
 - **A reason is not an execution of it.** `urn:wrt:reason:<sha256(wid ‖ ptr ‖
   reason_digest)>` is a stable fact of the record; `urn:sigma:run:<sha256(
-  receipt_core_digest ‖ wid ‖ ptr ‖ reason_digest ‖ semantics_digest)>` is
+  judgement_digest ‖ wid ‖ ptr ‖ reason_digest ‖ semantics_digest)>` is
   one execution under one declared semantics, carrying
   `sigma:semanticsDigest`, `sev:receiptCoreDigest` and `prov:used` (the
   reason and the check blob). Keying the run on the reason alone fused two

@@ -561,3 +561,68 @@ the false clause.
 
 **`@v1` is still not ratified and #6 is still stacked on the open #5.**
 Neither is mine to resolve.
+
+---
+
+# Round 22 closure — Codex, target `b66dfc9` (PR #6), verdict AMEND
+
+**3 P1**, and the closing recommendation matters more than any of them: stop
+the prose loop by moving the two matrices into language-neutral data.
+
+## P1-1 and P1-2 — the normative documents drifted again
+
+Four rounds running now. The code was right and the profile still told a
+second implementation to key runs on `receipt_core_digest` (two places), to
+attribute an agent on `valid && bound` alone (four places), and carried a
+manifest schema without `contract` or `judgement_digest`. The proposal still
+called the core digest "the citable identity".
+
+All corrected. But correcting prose for the fourth time is not a fix, it is
+a habit.
+
+## P1-3 — `L-UNBOUND` described a comparison that never happened
+
+`@v0` / base / null trust / `valid: true, binding: "unverified"` produced
+*"not both valid and bound under a grounding contract"* — but there is no
+grounding contract in that row to be measured against. Reworded to what is
+actually true of every state that lands there: **no valid, grounded bound
+association was established.**
+
+## The real work: two matrices as data
+
+- `conformance/judgement-identity.vectors.json` — contract + core →
+  `receipt_core_digest`, `judgement_digest`, verification graphs, and the
+  judgement-scoped subjects.
+- `conformance/signature-promotion.vectors.json` — the full 24-row cross of
+  contract × grade/trust × valid × binding → attribution, actor IRI,
+  `claimedSigner`, and the exact loss code.
+
+The profile now references these instead of restating the formulas.
+
+## The part worth reading: my first attempt at this proved nothing
+
+I generated both files carrying **parameters and expectations only**, and
+the harness compared the data against itself — recomputing digests from a
+stored core, checking expectations against a restatement of the rule. Every
+suite was green.
+
+Then mutation testing on the fixtures themselves: *"ungrounded checks bound
+only"* → **replay PASSES**. *"grounding ignored entirely"* → **replay
+PASSES**. I had written a fixture set that tested a JSON file.
+
+This is the same defect as the vacuous vectors of earlier rounds, in the
+artifact built specifically to end that class. Both files now ship the exact
+**snapshot bytes, receipt bytes and CAS** per case, and the harness
+**projects them**. Re-run against the same mutations: 7/7 now fail, including
+one that removes the projection call from the harness itself.
+
+A fixture that never runs the implementation is not language-neutral
+evidence. It is a second copy of the prose, in JSON.
+
+## State
+
+110 model + 350 projector + **66 fixtures** (11 parse-strict + 7 actor-iri +
+4 judgement-identity + 24 signature-promotion, with 20 more replayed rows) +
+29 adapter, all green.
+
+**`@v1` unratified; #6 still stacked on the open #5.**
