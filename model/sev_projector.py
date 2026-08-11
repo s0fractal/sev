@@ -3955,10 +3955,14 @@ def run_vectors():
         "import json, os, shutil, subprocess, sys, tempfile\n"
         "here = os.path.abspath('.')\n"
         "d = tempfile.mkdtemp()\n"
-        "shutil.copy(os.path.join(here, '..', 'conformance', 'replay.py'),\n"
-        "            os.path.join(d, 'replay.py'))\n"
-        "os.makedirs(os.path.join(d, '..', 'model'), exist_ok=True)\n"
-        "json.dump({'vectors': 'x', 'cases': []},\n"
+        # copy the WHOLE conformance directory, not just the harness: the
+        # loader now reads sibling fixtures and its own negative controls, so
+        # a lone replay.py died on a missing file instead of reaching the
+        # empty corpus — the control passed on the wrong failure (round 24)
+        "shutil.copytree(os.path.join(here, '..', 'conformance'),\n"
+        "                os.path.join(d, 'conformance'))\n"
+        "d = os.path.join(d, 'conformance')\n"
+        "json.dump({'vectors': 'sev.parse-strict@v0', 'cases': []},\n"
         "          open(os.path.join(d, 'parse-strict.vectors.json'), 'w'))\n"
         "p = subprocess.run([sys.executable, os.path.join(d, 'replay.py')],\n"
         "                   capture_output=True, text=True,\n"

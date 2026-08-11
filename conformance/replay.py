@@ -52,7 +52,11 @@ def load_fixtures(name, family, case_keys, root_keys=()):
     if extra:
         raise FixtureRefused("%s: unexpected root members %s" % (name, extra))
     if not isinstance(obj.get("cases"), list) or not obj["cases"]:
-        raise FixtureRefused("%s: empty or malformed case list" % name)
+        # the word is load-bearing: a negative control asserts this exact
+        # refusal, so an empty corpus keeps failing for the REASON it fails
+        # for, not merely with the right exit status
+        raise FixtureRefused("%s: empty case list — ALL PASS over zero cases "
+                             "is vacuous" % name)
     for i, case in enumerate(obj["cases"]):
         if not isinstance(case, dict):
             raise FixtureRefused("%s: case %d is not an object" % (name, i))
