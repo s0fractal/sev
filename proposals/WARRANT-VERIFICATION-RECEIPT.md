@@ -480,15 +480,23 @@ This freeze covers the receipt core only. It does not freeze the MVP
 projector, the full `sev@v0` target profile, an adapter to live Warrant
 verifier output, or adoption of this upstream proposal by Warrant.
 
-## Amendment A-1 — binding requires a trust basis — **PROPOSED, NOT RATIFIED**
+## `warrant.verification-receipt@v1` — A-1, binding requires a trust basis
 
-> **Status: PROPOSED — NOT RATIFIED.** This amends the frozen core above. It
-> is implemented in `model/snapshot_model.py` and vectored, but the frozen
-> revision remains `1fb82d6` until a clean exact-SHA gate ratifies this text
-> and a new SHA is recorded. A second implementation reading this document
-> must treat A-1 as normative **only** once that happens; until then, it
-> documents a proposal, and a receipt conforming to `1fb82d6` alone is not
-> non-conformant.
+> **Status: PROPOSED, on its own wire tag.** A-1 does **not** amend `@v0`.
+> The first draft did, and that was wrong in a way worth recording: the same
+> canonical receipt bytes, under the same type tag, were accepted by a
+> `1fb82d6` validator and refused by an amended one, with **nothing on the
+> wire to explain the disagreement**. A contract change that no byte
+> announces is not an amendment — it is a silent fork, and it would have made
+> two honest implementations disagree over sealed evidence with no way to
+> tell which was right.
+>
+> So `@v0` keeps its frozen semantics **permanently**. A receipt bearing
+> `warrant.verification-receipt@v0` is judged by the frozen rules for as long
+> as the tag exists, and nothing here retroactively makes such a receipt
+> non-conformant. A-1 ships as `warrant.verification-receipt@v1`, and a
+> validator dispatches on the tag. Ratifying `@v1` freezes a *new* contract
+> beside the old one; it never moves `@v0`.
 
 ### The defect
 
@@ -514,7 +522,7 @@ For every entry of `sources[].signatures[]`:
 |---|---|---|
 | `base` / `null` | `unverified` — **for every signature, valid or not** | `BINDING_WITHOUT_TRUST` at `/core/sources/<i>/signatures/<j>` |
 | `settlement` / hex64 | `bound` or `unbound` when `valid: true` | `UNVERIFIED_UNDER_TRUST` at the same locator |
-| `settlement` / hex64 | unconstrained when `valid: false` | — |
+| `settlement` / hex64 | `unbound` or `unverified` when `valid: false` | — |
 
 Both findings are `ERR`.
 
@@ -527,7 +535,11 @@ base grade on a record that otherwise projects.
 
 The settlement clause **is** conditioned on `valid: true`, because a
 verifier may legitimately not compute a binding for a signature that failed
-cryptographic verification. If Warrant's real surface turns out to compute
+cryptographic verification. That row is *not* unconstrained, and calling it
+so overstated the freedom: `bound` is already forbidden there by the frozen
+`BINDING_WITHOUT_VALIDITY` rule, so the reachable values are `unbound` and
+`unverified`. A-1 adds no further restriction on that row — it only declines
+to add one. If Warrant's real surface turns out to compute
 one regardless, this clause widens the same way the base clause did — that
 is an open question, not a settled reading.
 
@@ -537,6 +549,16 @@ A-1 sits beside `BINDING_WITHOUT_VALIDITY` (`valid: false` with
 `binding: "bound"`), which the frozen core already enforced. The two are
 independent: one forbids a binding stronger than the validity supports, the
 other forbids any binding without a basis to compute it.
+
+### What a projector does with a `@v0` receipt
+
+`@v0` remains conformant, so a projector must not report such a receipt as
+invalid. But conformance is not a licence: a `bound` issued under a contract
+that never required a trust basis grounds nothing, so the projection **mints
+no `prov:Agent` and asserts no attribution** from it, emits
+`wrt:claimedSigner` instead, and declares **`L-UNGROUNDED`** so a consumer
+can tell that case apart from an ordinary unbound signature. Under `@v1` the
+state cannot arise at all.
 
 ## Open questions
 

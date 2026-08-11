@@ -296,6 +296,9 @@ def _project_validated(view, cas) -> tuple:
     # (round 17 P1)
     emitted_sig_occurrences = 0
     unattributed_nodes = 0
+    # signatures reported `bound` by a contract that does not require a
+    # trust basis: conformant receipts, ungrounded claims
+    ungrounded_bindings = 0
 
     # verification graph: the receipt itself, mechanically produced
     rnode = iri_receipt(core_digest)
@@ -466,6 +469,27 @@ def _project_validated(view, cas) -> tuple:
             g.add(node, WRT + "binding", _lit(sig["binding"]), vgraph)
             actor_id = sig.get("actor")
             if not isinstance(actor_id, str):
+                continue
+            # A `bound` from a contract that does not require a trust basis
+            # is not a licence. `@v0` is frozen and stays conformant — the
+            # receipt is not retroactively wrong — but the GRAPH must not
+            # mint an identity from a binding nothing grounded, so the
+            # projector applies A-1 as its own precondition whatever the tag
+            # says (round 20 P1). Under `@v1` the receipt could not have
+            # carried this state at all.
+            # The trust-digest conjunct is belt-and-braces and labelled as
+            # such: a validated receipt with `grade: settlement` always
+            # carries a hex64 trust digest (`TRUST_DIGEST_REQUIRED`), and the
+            # projector only ever sees validated receipts, so no vector can
+            # isolate it. Kept so the licence reads as its own condition
+            # rather than borrowing one from another module.
+            grounded = (core["grade"] == "settlement"
+                        and sm._is_hex64(core.get("trust_config_digest")))
+            if sig["valid"] is True and sig["binding"] == "bound" \
+                    and not grounded:
+                ungrounded_bindings += 1
+                unattributed_nodes += 1
+                g.add(node, WRT + "claimedSigner", _lit(actor_id), vgraph)
                 continue
             if sig["valid"] is True and sig["binding"] == "bound":
                 agent = iri_actor(actor_id)
@@ -656,6 +680,13 @@ def _project_validated(view, cas) -> tuple:
     # entries it counted signatures on excluded records and then described
     # them as carrying `wrt:claimedSigner` — a statement about a node the
     # graph does not contain (round 17 P1).
+    if ungrounded_bindings:
+        qualified.append(loss("L-UNGROUNDED", "%d signature(s) report `bound` "
+                                              "under a contract that does not "
+                                              "require a trust basis (@v0); the "
+                                              "receipt is conformant, but no "
+                                              "agent is minted from it"
+                              % ungrounded_bindings))
     if unattributed_nodes:
         qualified.append(loss("L-UNBOUND", "%d projected signature(s) are not both "
                                            "valid and bound, so no agent is "
@@ -742,7 +773,7 @@ UPSTREAM_ACCEPT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 UPSTREAM_DIGEST = "bcd9765d73705a27f9273cf5e2fd2bd48ac5b1a1c02fc1e0958ede9dbdd4a88a"
 
 
-def fixture(extra_files=None, misfiled_as=None, settlement=False):
+def fixture(extra_files=None, misfiled_as=None, settlement=False, tag=None):
     """An end-to-end triple (snapshot, receipt, cas) built on a **vendored
     upstream Warrant record** whose signature that protocol vouches for.
 
@@ -806,7 +837,8 @@ def fixture(extra_files=None, misfiled_as=None, settlement=False):
             "execution_policy": {"runtimes": []},
             "ok": filed_as == wid, "errors": 0 if filed_as == wid else 1,
             "warnings": 0, "global_issues": [], "sources": sources}
-    receipt = {"receipt": "warrant.verification-receipt@v0", "core": core,
+    receipt = {"receipt": tag or "warrant.verification-receipt@v0",
+               "core": core,
                "producer": {"impl": "sev-fixture", "artifact_digest": None,
                             "spec": "0.4", "report_digest": "f" * 64,
                             "local_notes": []}}
@@ -820,7 +852,7 @@ def _mutate(receipt, fn):
 
 
 def ski_fixture(extra_files=None, misfiled_as=None, body_extra=None,
-                sigs_extra=None, settlement=False):
+                sigs_extra=None, settlement=False, tag=None):
     """A SYNTHETIC ski@v1 triple, for vectors that need a projected check run.
 
     Its signature is a placeholder, and the receipt reports `valid: true` —
@@ -904,7 +936,8 @@ def ski_fixture(extra_files=None, misfiled_as=None, body_extra=None,
                  "budget_unit": "atp", "ceiling": 1000}]},
             "ok": filed_as == wid, "errors": 0 if filed_as == wid else 1,
             "warnings": 0, "global_issues": [], "sources": sources}
-    receipt = {"receipt": "warrant.verification-receipt@v0", "core": core,
+    receipt = {"receipt": tag or "warrant.verification-receipt@v0",
+               "core": core,
                "producer": {"impl": "sev-fixture", "artifact_digest": None,
                             "spec": "0.4", "report_digest": "f" * 64,
                             "local_notes": []}}
@@ -3659,6 +3692,60 @@ def run_vectors():
                   lambda: _resQ is None and any(
                       x["code"] == "BINDING_WITHOUT_VALIDITY" for x in fQ))
 
+    # THE round-20 vector: one core, two tags, two verdicts — and the tag is
+    # what tells them apart. Applying A-1 under the frozen `@v0` gave the
+    # same canonical bytes `[]` from one honest validator and
+    # `BINDING_WITHOUT_TRUST` from another, with nothing on the wire to
+    # explain the disagreement. A contract change no byte announces is not
+    # an amendment, it is a silent fork.
+    snV, rcV, csV = fixture()          # base grade, trust null
+    for _sg in [s for s in rcV["core"]["sources"]
+                if s.get("signatures")][0]["signatures"]:
+        _sg["binding"] = "bound"
+    core_v0 = json.loads(json.dumps(rcV["core"]))
+    _res_v0, f_v0 = _project_objects(snV, rcV, csV)
+    rcV1 = {"receipt": "warrant.verification-receipt@v1",
+            "core": json.loads(json.dumps(core_v0)),
+            "producer": json.loads(json.dumps(rcV["producer"]))}
+    _res_v1, f_v1 = _project_objects(snV, rcV1, csV)
+    sm.check_equal("the SAME core under two tags is byte-identical",
+                   sm.jcs(core_v0), sm.jcs(rcV1["core"]))
+    sm.check_equal("...accepted by the frozen @v0 contract, unchanged", f_v0, [])
+    sm.check_true("...and refused by @v1, which announces A-1 on the wire",
+                  lambda: _res_v1 is None
+                  and any(x["code"] == "BINDING_WITHOUT_TRUST" for x in f_v1))
+    rcVX = dict(rcV1, receipt="warrant.verification-receipt@v9")
+    _resX3, fX3 = _project_objects(snV, rcVX, csV)
+    # The @v0 receipt stays conformant — and the graph still refuses to mint
+    # an identity from a binding its contract never grounded.
+    q_v0 = _res_v0["nquads"].decode()
+    sm.check_true("a conformant @v0 receipt mints no ungrounded agent",
+                  lambda: "prov#Agent" not in q_v0
+                  and "prov#wasAttributedTo" not in q_v0
+                  and "wrt#claimedSigner" in q_v0)
+    sm.check_true("...and says why, rather than looking merely unbound",
+                  lambda: "L-UNGROUNDED" in
+                  [e["code"] for e in _res_v0["loss_manifest"]["entries"]])
+    # under a grounded contract the same shape DOES promote
+    snV2, rcV2, csV2 = fixture(settlement=True)
+    for _sg in [s for s in rcV2["core"]["sources"]
+                if s.get("signatures")][0]["signatures"]:
+        _sg["binding"] = "bound"
+    _res_ok, _f_ok = _project_objects(snV2, rcV2, csV2)
+    sm.check_true("a grounded binding still promotes",
+                  lambda: _f_ok == []
+                  and "prov#wasAttributedTo" in _res_ok["nquads"].decode()
+                  and "L-UNGROUNDED" not in
+                  [e["code"] for e in _res_ok["loss_manifest"]["entries"]])
+    sm.check_true("an unknown contract tag is refused, never guessed",
+                  lambda: _resX3 is None
+                  and any(x["code"] == "BAD_TYPE_TAG" for x in fX3))
+    # totality: the dispatch keys a dict lookup on untrusted input
+    for _hostile in ({}, [], 7, None):
+        _resH, fH = _project_objects(snV, dict(rcV1, receipt=_hostile), csV)
+        sm.check_true("a hostile tag is refused, not raised (%r)" % (_hostile,),
+                      lambda fH=fH: any(x["code"] == "BAD_TYPE_TAG" for x in fH))
+
     # A binding needs a trust basis. Warrant makes the key→actor association
     # from key state alone: with no pinned trust config it reports
     # `unverified` for everything, and with one it reports `bound`/`unbound`.
@@ -3671,7 +3758,7 @@ def run_vectors():
                                     (False, "unverified", None),
                                     (True, "bound", None),
                                     (True, "unbound", None)):
-        snT, rcT, csT = fixture(settlement=settle)
+        snT, rcT, csT = fixture(settlement=settle, tag="warrant.verification-receipt@v1")
         for sg in [s for s in rcT["core"]["sources"]
                    if s.get("signatures")][0]["signatures"]:
             sg["binding"] = binding
@@ -3692,7 +3779,8 @@ def run_vectors():
     # the graph asserts an ungrounded binding. Without key state Warrant does
     # not know a key is unbound either; it knows only `unverified`.
     snB, rcB, csB = ski_fixture(
-        sigs_extra=[{"actor": "co@example", "key": "a" * 64, "sig": "b" * 128}])
+        sigs_extra=[{"actor": "co@example", "key": "a" * 64, "sig": "b" * 128}],
+        tag="warrant.verification-receipt@v1")
     srcB = [s for s in rcB["core"]["sources"] if s.get("signatures")][0]
     for sg in srcB["signatures"]:
         if sg["actor"] == "co@example":
@@ -3711,7 +3799,7 @@ def run_vectors():
     # binding computed at all.
     snB2, rcB2, csB2 = ski_fixture(
         sigs_extra=[{"actor": "co@example", "key": "a" * 64, "sig": "b" * 128}],
-        settlement=True)
+        settlement=True, tag="warrant.verification-receipt@v1")
     srcB3 = [s for s in rcB2["core"]["sources"] if s.get("signatures")][0]
     for sg in srcB3["signatures"]:
         sg["binding"] = "unverified" if sg["actor"] == "co@example" else "bound"

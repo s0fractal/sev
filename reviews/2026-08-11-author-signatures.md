@@ -386,3 +386,92 @@ widened to JavaScript's.
 **Not done:** no merge, no freeze, and the frozen SHA stays `1fb82d6` —
 A-1 is ratified only by a clean exact-SHA gate on this text, which is the
 reviewer's act, not mine.
+
+---
+
+# Round 20 closure — Codex, target `4243459` (PR #6), verdict AMEND
+
+**1 P1 + 2 P2.** The P1 is the most important finding of this whole
+sequence, and it is a finding about **me getting the shape of a change
+wrong**, not about a missing check.
+
+## P1 — A-1 changed a frozen contract with no wire identity
+
+Reproduced: one canonical receipt, one type tag, two verdicts —
+`[]` under `1fb82d6`, `[BINDING_WITHOUT_TRUST]` under the candidate. Both
+implementations honest, both calling themselves
+`warrant.verification-receipt@v0`, and **nothing in the bytes to explain the
+disagreement**.
+
+I had treated a semantic tightening as a document amendment. It is not. A
+contract change that no byte announces is a **silent fork**: two honest
+implementations disagree over sealed evidence with no way to tell which is
+right, which is the failure this entire repository exists to make
+impossible. Filing A-1 as normative text — round 19's fix — made it
+ratifiable but did not make it *identifiable*, and identifiability was the
+missing half.
+
+**Disposition.**
+
+- `@v0` keeps its frozen semantics **permanently**. Nothing retroactively
+  makes a conformant `@v0` receipt invalid.
+- A-1 ships as **`warrant.verification-receipt@v1`**, a separate wire tag.
+- The validator dispatches on the tag through a `RECEIPT_TAGS` registry;
+  `validate_receipt_core` takes an explicit `contract` and **defaults to the
+  frozen behaviour**, so every direct caller keeps `1fb82d6` semantics.
+- Vectored exactly as asked: the *same core bytes* accepted under `@v0` and
+  refused under `@v1`, plus an unknown tag refused rather than guessed.
+
+**Conformance is not a licence.** A `bound` issued under a contract that
+never required a trust basis grounds nothing, so the projector applies A-1
+as its **own** precondition regardless of tag: no `prov:Agent`, no
+attribution, `wrt:claimedSigner` instead, and a new **`L-UNGROUNDED`** so a
+consumer can tell that case from an ordinary unbound signature. The receipt
+is never called non-conformant for it.
+
+**A defect in my own dispatch, caught immediately by the existing fuzz
+vector.** Replacing `!=` with `tag not in RECEIPT_TAGS` broke totality: `in`
+hashes its operand, so a receipt whose tag is a dict or list raised
+`TypeError` where the old comparison returned a finding. A validator that
+must be total over any parsed JSON cannot key a lookup on untrusted input
+without checking it is a string first. Hostile-tag vectors added.
+
+## P2-1 — the matrix overstated the freedom it granted
+
+`settlement` + `valid: false` was called *unconstrained*. It is not:
+`bound` is already forbidden there by the frozen `BINDING_WITHOUT_VALIDITY`
+rule, so the reachable values are `unbound` and `unverified`. The row now
+says so, and states that A-1 adds no further restriction — it only declines
+to add one.
+
+## P2-2 — a conformance vector canonised an unreachable state
+
+The empty-actor case minted `urn:wrt:actor:` although the body schema
+requires a non-empty `actor.id` and signature derivation rejects an empty
+actor. Left in the product set it would have taught a second implementation
+to mint identity for a state the protocol does not admit.
+
+Moved into a `helper_totality` block that explicitly says it is **not** part
+of the actor-identity contract. The encoder's totality over it is an
+implementation property, not a contract.
+
+## Mutation results
+
+10/10 fail: A-1 leaking back into `@v0`, `@v1` no longer enforcing it,
+unknown tag accepted, dispatch losing totality, the default contract
+flipping to `@v1`, the flag ignored entirely, ungrounded promotion allowed,
+`L-UNGROUNDED` undeclared, plus the two from the round-19 battery re-run.
+
+One clause is **labelled, not counted**: the trust-digest conjunct in the
+projector's `grounded` test. A validated receipt with `grade: settlement`
+always carries a hex64 trust digest, and the projector only sees validated
+receipts, so no vector can isolate it.
+
+## State
+
+110 model + 332 projector + **18 fixtures** (11 parse-strict + 7 actor-iri)
++ 29 adapter, all green. Live store unchanged.
+
+**Frozen SHA `1fb82d6` does not move, and will not.** `@v1` is a proposed
+contract beside it, not a replacement of it — ratification freezes a new
+artifact and leaves the old one exactly where it is.

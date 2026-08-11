@@ -46,6 +46,17 @@ FAILURE_CODES = {"OVER_BUDGET", "MISSING_BLOB", "MALFORMED_CHECK",
                  "RUNTIME_UNAVAILABLE", "ORACLE_UNAVAILABLE"}
 VERDICTS = {"pass", "fail"}
 NORMATIVE_NOT_EXECUTED = {"cmd@v1"}  # warrant SPEC: verify does not re-run these
+
+# The receipt contracts this validator implements, keyed by WIRE TAG.
+# `@v0` is frozen at `1fb82d6` and its semantics never change again:
+# the same canonical bytes must keep the same verdict forever, or two
+# honest implementations disagree with nothing on the wire to explain
+# why. Amendment A-1 therefore ships as a NEW tag rather than as a
+# tightening of the old one (round 20 P1).
+RECEIPT_TAGS = {
+    "warrant.verification-receipt@v0": {"binding_needs_trust": False},
+    "warrant.verification-receipt@v1": {"binding_needs_trust": True},
+}
 # warrant SPEC §3: the runtime registry is closed and keyed by BODY version —
 # ski@v1 is available in "0.2" bodies and reserved (MUST reject) in "0.1";
 # any other value makes the record invalid. execution_policy may narrow
@@ -668,11 +679,18 @@ def _join_issue(issues, code, severity, ptr):
 
 # --------------------------------------------- receipt core (internal layer)
 
-def validate_receipt_core(core, descriptor=None, cas=None, view=None) -> list:
+def validate_receipt_core(core, descriptor=None, cas=None, view=None,
+                          contract=None) -> list:
     """Total over any parsed JSON value. Judges internal consistency and,
     when descriptor/cas are supplied by the composed verdict, byte-level
-    reason resolution. Public entry is verify_receipt_bytes()."""
+    reason resolution. Public entry is verify_receipt_bytes().
+
+    `contract` selects the wire semantics. It DEFAULTS to the frozen `@v0`
+    behaviour, so a caller that names no contract gets exactly what
+    `1fb82d6` did — the frozen surface must not change under anyone's feet
+    because a newer tag exists (round 20 P1)."""
     f = []
+    binding_needs_trust = bool((contract or {}).get("binding_needs_trust"))
     if not isinstance(core, dict):
         _f(f, "NOT_OBJECT", "/core")
         return f
@@ -932,6 +950,7 @@ def validate_receipt_core(core, descriptor=None, cas=None, view=None) -> list:
             # state no verifier can produce — and the projector then minted a
             # `prov:Agent` from it. **This is an amendment to a FROZEN
             # contract** (round 18 P1); see the freeze table in README.
+            # A-1, and ONLY under a contract that announces it on the wire.
             # The base rule is NOT scoped to valid signatures. Binding is a
             # statement about key→actor association, and without key state
             # Warrant does not know a key is *unbound* either — it knows only
@@ -941,13 +960,14 @@ def validate_receipt_core(core, descriptor=None, cas=None, view=None) -> list:
             # actor signature then projected that ungrounded binding and its
             # `claimedSigner` (round 19 P1 — the open question round 18
             # forwarded, answered against the narrower reading).
-            if grade == "base" and s["binding"] != "unverified":
+            if binding_needs_trust and grade == "base" \
+                    and s["binding"] != "unverified":
                 _f(f, "BINDING_WITHOUT_TRUST", sat)
             # The settlement side stays scoped: under a pinned trust config a
             # valid signature must resolve to bound/unbound, while an invalid
             # one may legitimately have had no binding computed at all.
-            elif (grade == "settlement" and s["valid"] is True
-                  and s["binding"] == "unverified"):
+            elif (binding_needs_trust and grade == "settlement"
+                  and s["valid"] is True and s["binding"] == "unverified"):
                 _f(f, "UNVERIFIED_UNDER_TRUST", sat)
         _ordered(f, good_sigs, lambda s: (s["sig_digest"], s["multiplicity"]),
                  "SIGNATURES_NOT_SORTED", at + "/signatures")
@@ -1661,9 +1681,23 @@ def _verdict(snapshot, receipt, cas, expected_version, view,
     if not isinstance(receipt, dict):
         _f(f, "NOT_OBJECT", "/receipt")
         return f
-    if receipt.get("receipt") != "warrant.verification-receipt@v0":
+    # Dispatch on the WIRE tag. Amendment A-1 tightens what a `binding` may
+    # say, and applying it under the frozen tag gave the same canonical bytes
+    # two different verdicts: `[]` from a v0 validator, `BINDING_WITHOUT_TRUST`
+    # from an amended one, with nothing on the wire to tell them apart. A
+    # contract change that no byte announces is not an amendment, it is a
+    # silent fork (round 20 P1). `@v0` keeps its frozen semantics forever;
+    # A-1 lives in `@v1`.
+    tag = receipt.get("receipt")
+    # `isinstance` first: `x in dict` hashes x, and a receipt whose tag is a
+    # dict or a list made the dispatch raise where the old `!=` comparison
+    # was total. The fuzz vector caught it on the first run — a validator
+    # that must be total over any parsed JSON cannot key a lookup on
+    # untrusted input without checking it is a string.
+    if not isinstance(tag, str) or tag not in RECEIPT_TAGS:
         _f(f, "BAD_TYPE_TAG", "/receipt")
         return f
+    contract = RECEIPT_TAGS[tag]
     if set(receipt.keys()) != {"receipt", "core", "producer"}:
         _f(f, "SCHEMA_KEYS", "/receipt")
         return f
@@ -1685,7 +1719,8 @@ def _verdict(snapshot, receipt, cas, expected_version, view,
         _f(f, "BAD_PRODUCER_SCHEMA", "/producer")
 
     core = receipt["core"]
-    core_f = validate_receipt_core(core, cas=cas, view=view)
+    core_f = validate_receipt_core(core, cas=cas, view=view,
+                                   contract=contract)
     f.extend(core_f)
     if not isinstance(core, dict) or not isinstance(snapshot, dict):
         return f
@@ -2494,6 +2529,29 @@ def _ve(fn):
     return False
 
 
+def frozen_default_contract():
+    """A caller that names no contract gets the FROZEN semantics.
+
+    `validate_receipt_core` is reachable directly, and the wire dispatch that
+    selects `@v1` sits above it. If its default ever flipped, every direct
+    caller — including a second implementation reading this module as the
+    reference — would silently start enforcing A-1 under `@v0`, which is the
+    exact fork the tag split exists to prevent (round 20 P1).
+    """
+    snap, receipt, cas = _fixture()
+    core = json.loads(json.dumps(receipt["core"]))
+    for s in core["sources"]:
+        for sig in s.get("signatures") or []:
+            sig["binding"] = "bound"          # base grade, trust null
+    codes = [x["code"] for x in validate_receipt_core(core)]
+    check_true("the default contract is the frozen one, not the newest",
+               lambda: "BINDING_WITHOUT_TRUST" not in codes)
+    codes_v1 = [x["code"] for x in validate_receipt_core(
+        core, contract=RECEIPT_TAGS["warrant.verification-receipt@v1"])]
+    check_true("...and naming @v1 explicitly does enforce A-1",
+               lambda: "BINDING_WITHOUT_TRUST" in codes_v1)
+
+
 def view_is_output_only():
     """The verdict must not depend on whether a view was requested.
 
@@ -2598,6 +2656,7 @@ def harness_selftest():
 
 def main():
     run_vectors()
+    frozen_default_contract()
     view_is_output_only()
     harness_selftest()
     print()
