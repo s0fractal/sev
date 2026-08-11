@@ -16,15 +16,140 @@ sys.path.insert(0, os.path.join(HERE, "..", "model"))
 import snapshot_model as sm  # noqa: E402
 
 
+class FixtureRefused(Exception):
+    """The fixture file is not readable under its own contract."""
+
+
+def load_fixtures(name, family, case_keys, root_keys=()):
+    """THE strict reader for every `*.vectors.json`.
+
+    This repository refuses a receipt for a duplicate member, a BOM, trailing
+    bytes or a lone surrogate — and then read its own conformance corpus with
+    `json.load`, which silently keeps the last duplicate, and
+    `base64.b64decode`, which silently ignores characters outside the
+    alphabet. Three independent mutations replayed as ALL PASS: a wrong
+    family tag, a duplicated `vectors` member, and `!!!!` prefixed to a
+    payload (round 24 P1).
+
+    A corpus that only one implementation can read the way its author meant
+    is not language-neutral evidence, and the fix is not a new parser: it is
+    the strict one this repository already owns.
+    """
+    path = os.path.join(HERE, name)
+    with open(path, "rb") as fh:
+        raw = fh.read()
+    obj, findings = sm.parse_strict(raw)
+    fatal = [x["code"] for x in findings if x["code"] != "NOT_CANONICAL"]
+    if fatal:
+        raise FixtureRefused("%s: %s" % (name, fatal))
+    if not isinstance(obj, dict):
+        raise FixtureRefused("%s: not a JSON object" % name)
+    if obj.get("vectors") != family:
+        raise FixtureRefused("%s: family tag is %r, expected %r"
+                             % (name, obj.get("vectors"), family))
+    allowed = set(root_keys) | {"vectors", "cases", "note"}
+    extra = sorted(set(obj) - allowed)
+    if extra:
+        raise FixtureRefused("%s: unexpected root members %s" % (name, extra))
+    if not isinstance(obj.get("cases"), list) or not obj["cases"]:
+        raise FixtureRefused("%s: empty or malformed case list" % name)
+    for i, case in enumerate(obj["cases"]):
+        if not isinstance(case, dict):
+            raise FixtureRefused("%s: case %d is not an object" % (name, i))
+        missing = sorted(set(case_keys) - set(case))
+        if missing:
+            raise FixtureRefused("%s: case %d is missing %s"
+                                 % (name, i, missing))
+    return obj
+
+
+def b64(value, where):
+    """Canonical, padded, standard-alphabet base64 — or a refusal.
+
+    `validate=True` rejects the alphabet, and re-encoding catches the rest:
+    non-canonical padding and trailing bits that decode to the same bytes but
+    are not what a second implementation would emit.
+    """
+    if not isinstance(value, str):
+        raise FixtureRefused("%s: payload is not a string" % where)
+    try:
+        raw = base64.b64decode(value, validate=True)
+    except Exception as exc:
+        raise FixtureRefused("%s: %s" % (where, exc))
+    if base64.b64encode(raw).decode("ascii") != value:
+        raise FixtureRefused("%s: base64 is not canonical" % where)
+    return raw
+
+
+def loader_selftest():
+    """Permanent negative controls for the loader itself.
+
+    A strict reader that is never shown a bad file is indistinguishable from
+    a permissive one. Each case below is a mutation that replayed as ALL PASS
+    before round 24, written against a temporary copy of a real fixture so
+    the control cannot drift away from the format it guards.
+    """
+    import tempfile
+    good = os.path.join(HERE, "actor-iri.vectors.json")
+    with open(good, "rb") as fh:
+        raw = fh.read()
+    family = "sev.actor-iri@v0"
+    keys = ("name", "actor_b64", "iri")
+    mutations = [
+        ("a wrong family tag",
+         raw.replace(b'"sev.actor-iri@v0"', b'"sev.signature-promotion@v0"', 1)),
+        ("a duplicated family member",
+         raw.replace(b'"vectors": "sev.actor-iri@v0",',
+                     b'"vectors": "hostile", "vectors": "sev.actor-iri@v0",', 1)),
+        ("an unexpected root member",
+         raw.replace(b'"vectors":', b'"surprise": 1,\n  "vectors":', 1)),
+        ("an empty case list", raw.replace(b'"cases": [', b'"cases": [], "unused": [', 1)),
+        ("a BOM", b"\xef\xbb\xbf" + raw),
+        ("trailing bytes", raw.rstrip() + b" x"),
+    ]
+    ok = True
+    for label, blob in mutations:
+        tmp = tempfile.mkdtemp()
+        name = "probe.vectors.json"
+        with open(os.path.join(tmp, name), "wb") as fh:
+            fh.write(blob)
+        saved, globals()["HERE"] = HERE, tmp
+        try:
+            load_fixtures(name, family, keys,
+                          root_keys=("rule", "minted_only_when",
+                                     "helper_totality"))
+            print("FAIL  loader accepts %s" % label)
+            ok = False
+        except FixtureRefused:
+            print("PASS  loader refuses %s" % label)
+        finally:
+            globals()["HERE"] = saved
+    for label, payload in (("a non-alphabet character", "!!!!QUJD"),
+                           ("non-canonical padding", "QUJD===="),
+                           ("a non-string payload", 7)):
+        try:
+            b64(payload, "selftest")
+            print("FAIL  base64 accepts %s" % label)
+            ok = False
+        except FixtureRefused:
+            print("PASS  base64 refuses %s" % label)
+    return ok
+
+
 def main():
-    with open(os.path.join(HERE, "parse-strict.vectors.json")) as fh:
-        fixtures = json.load(fh)
-    if not fixtures.get("cases"):
-        print("FAIL  empty fixture set — ALL PASS over zero cases is vacuous")
+    if not loader_selftest():
+        print("FAILED: the fixture loader is not strict")
+        return 1
+    try:
+        fixtures = load_fixtures("parse-strict.vectors.json",
+                                 "sev.parse-strict@v0",
+                                 ("name", "raw_b64", "expected_codes"))
+    except FixtureRefused as exc:
+        print("FAIL  fixture corpus refused: %s" % exc)
         return 1
     failed = 0
     for case in fixtures["cases"]:
-        raw = base64.b64decode(case["raw_b64"])
+        raw = b64(case["raw_b64"], "parse-strict/%s" % case["name"])
         _obj, findings = sm.parse_strict(raw)
         got = [x["code"] for x in findings]
         ok = got == case["expected_codes"]
@@ -37,13 +162,12 @@ def main():
     # document still described the superseded rule — and the document is
     # what a second implementation reads.
     import sev_projector as sp
-    with open(os.path.join(HERE, "actor-iri.vectors.json")) as fh:
-        actor_fx = json.load(fh)
-    if not actor_fx.get("cases"):
-        print("FAIL  empty actor-iri fixture set — vacuous")
-        return 1
+    actor_fx = load_fixtures("actor-iri.vectors.json", "sev.actor-iri@v0",
+                             ("name", "actor_b64", "iri"),
+                             root_keys=("rule", "minted_only_when",
+                                        "helper_totality"))
     for case in actor_fx["cases"]:
-        actor = base64.b64decode(case["actor_b64"]).decode("utf-8")
+        actor = b64(case["actor_b64"], "actor-iri/%s" % case["name"]).decode("utf-8")
         got = sp.iri_actor(actor)
         ok = got == case["iri"]
         print("%s  actor-iri: %s%s" % ("PASS" if ok else "FAIL", case["name"],
@@ -62,22 +186,25 @@ def main():
     import sev_projector as sp
 
     def _cas(case):
-        return {k: base64.b64decode(v) for k, v in case["cas"].items()}
+        return {k: b64(v, "%s/cas/%s" % (case["name"], k))
+                for k, v in case["cas"].items()}
 
-    with open(os.path.join(HERE, "judgement-identity.vectors.json")) as fh:
-        ident_fx = json.load(fh)
-    with open(os.path.join(HERE, "signature-promotion.vectors.json")) as fh:
-        promo_fx = json.load(fh)
-    for fx, name in ((ident_fx, "judgement-identity"),
-                     (promo_fx, "signature-promotion")):
-        if not fx.get("cases"):
-            print("FAIL  empty %s fixture set — vacuous" % name)
-            return 1
+    ident_fx = load_fixtures("judgement-identity.vectors.json",
+                             "sev.judgement-identity@v0",
+                             ("name", "contract", "snapshot_b64",
+                              "receipt_b64", "cas", "expect"),
+                             root_keys=("rule",))
+    promo_fx = load_fixtures("signature-promotion.vectors.json",
+                             "sev.signature-promotion@v0",
+                             ("name", "contract", "grade",
+                              "trust_config_digest", "signature",
+                              "snapshot_b64", "receipt_b64", "cas", "expect"),
+                             root_keys=("rule", "loss_codes"))
 
     for case in ident_fx["cases"]:
         res, findings = sp.project_bytes(
-            base64.b64decode(case["snapshot_b64"]),
-            base64.b64decode(case["receipt_b64"]), _cas(case))
+            b64(case["snapshot_b64"], case["name"]),
+            b64(case["receipt_b64"], case["name"]), _cas(case))
         exp = case["expect"]
         if res is None:
             ok, why = False, "refused: %s" % [x["code"] for x in findings]
@@ -108,15 +235,15 @@ def main():
     # contract (round 23 P1). A coordinate a case merely *claims* is not
     # evidence; the coordinate it *is* comes from what it ships.
     def _coord_identity(case):
-        receipt = json.loads(base64.b64decode(case["receipt_b64"]).decode("utf-8"))
-        res, _f = sp.project_bytes(base64.b64decode(case["snapshot_b64"]),
-                                   base64.b64decode(case["receipt_b64"]),
+        receipt, _rf = sm.parse_strict(b64(case["receipt_b64"], case["name"]))
+        res, _f = sp.project_bytes(b64(case["snapshot_b64"], case["name"]),
+                                   b64(case["receipt_b64"], case["name"]),
                                    _cas(case))
         runs = res is not None and "check-run" in res["view_manifest"]["coverage"]["emitted"]
         return (receipt["receipt"], "check-run" if runs else "no-run")
 
     def _coord_promotion(case):
-        receipt = json.loads(base64.b64decode(case["receipt_b64"]).decode("utf-8"))
+        receipt, _rf = sm.parse_strict(b64(case["receipt_b64"], case["name"]))
         core = receipt["core"]
         sig = [s for s in core["sources"] if s.get("signatures")][0]["signatures"][0]
         return (receipt["receipt"], core["grade"], sig["valid"], sig["binding"])
@@ -135,16 +262,23 @@ def main():
         # the human-readable fields beside each case are decoration, and
         # decoration that contradicts the bytes misleads whoever reads the
         # file instead of running it
+        # Required and compared EXACTLY. Filtering `None` out and comparing
+        # only when the lengths matched made the fields fail-open: a lying
+        # field was caught, while DELETING the same field — strictly cheaper
+        # — was not (round 24 P2). The loader already refuses a case that
+        # omits them; this checks the ones present are true.
         for case, c in zip(fx["cases"], got):
-            claimed = (case.get("contract"), case.get("grade"),
-                       (case.get("signature") or {}).get("valid"),
-                       (case.get("signature") or {}).get("binding"))
-            claimed = tuple(x for x in claimed if x is not None)
-            derived = tuple(x for x in c if not isinstance(x, str)
-                            or x not in ("no-run", "check-run"))
-            if len(claimed) == len(derived) and claimed != derived:
-                print("FAIL  %s: metadata contradicts its own bytes (%s)"
-                      % (name, case.get("name")))
+            if name == "signature-promotion":
+                claimed = (case["contract"], case["grade"],
+                           case["signature"]["valid"],
+                           case["signature"]["binding"])
+            else:
+                claimed = (case["contract"],)
+                c = c[:1]
+            if claimed != c:
+                print("FAIL  %s: metadata contradicts its own bytes (%s: "
+                      "says %s, bytes say %s)"
+                      % (name, case["name"], claimed, c))
                 failed += 1
         dupes = sorted({c for c in got if got.count(c) > 1})
         missing = sorted(want - set(got))
@@ -160,8 +294,8 @@ def main():
     projected_rows = 0
     for case in promo_fx["cases"]:
         res, findings = sp.project_bytes(
-            base64.b64decode(case["snapshot_b64"]),
-            base64.b64decode(case["receipt_b64"]), _cas(case))
+            b64(case["snapshot_b64"], case["name"]),
+            b64(case["receipt_b64"], case["name"]), _cas(case))
         exp = case["expect"]
         if exp["receipt_refused"] is not None:
             ok = (res is None
