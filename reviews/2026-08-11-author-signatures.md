@@ -197,3 +197,103 @@ fail.
 
 108 model + 300 projector + 11 fixtures + 29 adapter, all green. Live store:
 81 sources, 1177 quads, 0 errors / 16 warnings.
+
+---
+
+# Round 18 closure — Codex, target `f67510a` (PR #6), verdict AMEND
+
+**3 P1 + 1 P2.** All reproduced before any change.
+
+> **GOVERNANCE FLAG, stated first.** Closing P1-1 required a new invariant
+> in `warrant.verification-receipt@v0` core — a **FROZEN** contract
+> (`1fb82d6`). The change is implemented, and the freeze table now records
+> it as **proposed and NOT ratified**. Ratifying an amendment to a frozen
+> invariant is not a merge decision and not mine; it is flagged here, in
+> `README.md`, and in the PR rather than folded in silently.
+
+## P1-1 — `bound` accepted with no trust basis
+
+Reproduced exactly: `grade: base`, `trust_config_digest: null`,
+`valid: true`, `binding: "bound"` → zero findings, a graph, a `prov:Agent`
+and an attribution. The symmetric case (settlement + pinned trust +
+`unverified`) also passed.
+
+The contradiction is internal to the core. It already enforced
+`trust_config_digest == null iff base`; what it never enforced is that a
+**binding needs a basis**. Warrant makes the key→actor association from key
+state alone: with no pinned trust config it reports `unverified` for
+everything, with one it reports `bound`/`unbound`. So the receipt could
+assert a state no verifier can produce, and the projector minted an identity
+from it — the exact thing the promotion rule exists to prevent, defeated one
+layer below where the rule lives.
+
+**Disposition.** For a signature reported `valid: true`:
+
+| grade / trust | permitted binding |
+|---|---|
+| `base` / null | `unverified` only (`BINDING_WITHOUT_TRUST`) |
+| `settlement` / pinned | `bound` or `unbound` (`UNVERIFIED_UNDER_TRUST`) |
+
+All six cells vectored. Every bound fixture is rebuilt as a settlement
+receipt with a pinned trust config, since `bound` is otherwise unreachable.
+
+**Scope boundary, asserted and forwarded.** The matrix is scoped to
+`valid: true`, as specified. An *invalid* signature reported `unbound` at
+base grade is still accepted, and a vector pins that so the boundary cannot
+drift silently. Whether it *should* be accepted is an open question —
+Warrant without key state reports `unverified` regardless of validity, so
+`unbound` may be unreachable there too. Forwarded rather than decided:
+widening a frozen invariant past what was reviewed is not mine to do.
+
+## P1-2 — the bound path's manifest contradicted its own graph
+
+Reproduced: `prov:Agent` and `prov:wasAttributedTo` in the N-Quads,
+`attribution` absent from `coverage.emitted`, and `L-NOPROMOTE` asserting
+that *"nothing licenses promotion to prov:Agent … so none is asserted"* —
+false the moment a `valid && bound` signature exists, since that **is** the
+profile's licence.
+
+**Disposition.** `attribution` is added to `emitted_kinds` on the promotion
+branch. `L-NOPROMOTE` is narrowed to the exact residue: the **body-actor**
+association (`prov:Association` / `wasAssociatedWith`) and the **policy**
+plan (`prov:Plan` / `hadPlan`) are still missing; signature attribution is a
+separate promotion and may be present. Vectored on the bound fixture.
+
+## P1-3 — the actor encoding was still library-defined
+
+Confirmed by execution: `urllib.parse.quote(safe="")` leaves `AZaz09-._~`
+literal. "Empty safe set" described a *parameter*, not a *contract* — and
+three honest implementations could still disagree, since
+`encodeURIComponent` additionally keeps `!*'()` and lowercase `%hh` is
+equally legal under RFC 3986. A join that silently finds nothing is the
+failure mode.
+
+**Disposition.** The encoder is written out rather than delegated: retain
+ASCII `A-Z a-z 0-9 - . _ ~`, percent-encode every other UTF-8 octet as
+**uppercase** `%HH`. The profile states the rule in those terms. Five
+boundary vectors: unreserved retained, JavaScript's extra safe set encoded,
+delimiters encoded, uppercase hex, and octets-not-code-points.
+
+## P2 — `claimedSigner` had two definitions
+
+Confirmed. §4.1 said valid-but-unbound; the code, the loss table and the
+shapes note all applied the whole complement of `valid && bound`.
+
+**Disposition — the complement wins, and the profile now says so.** Naming
+the actor an envelope *claims* signed is honest in every weaker state,
+including invalid, and the node carries `wrt:sigValid` beside it, so nothing
+is asserted the receipt did not report.
+
+## Mutation results
+
+8/8 fail the suites: binding matrix removed, its settlement half removed,
+matrix applied beyond `valid: true`, attribution not recorded,
+`L-NOPROMOTE` denying again, unreserved set widened, lowercase hex, and
+code-points instead of octets.
+
+## State
+
+108 model + 318 projector + 11 fixtures + 29 adapter, all green. Live store
+unchanged and now *more* tightly constrained: every binding is `unverified`
+at base grade, which is exactly what the new matrix permits — an adapter
+claiming `bound` there would now be refused.
