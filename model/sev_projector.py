@@ -282,8 +282,19 @@ def _project_validated(view, cas) -> tuple:
     receipt = view["receipt"]
 
     core = view["core"]
+    # TWO digests, because they answer different questions. The content
+    # digest identifies the core BYTES; the judgement digest identifies the
+    # judgement, which is the core *under a named contract*. Keying identity
+    # on content alone erased the wire tag exactly where provenance is
+    # supposed to preserve it: a `@v0` and a `@v1` receipt with the same core
+    # produced byte-identical graphs, manifests and receipt nodes, so the
+    # version distinction round 20 introduced at the input vanished at the
+    # output (round 21 P1).
     core_digest = sm.sha256_hex(sm.jcs(core))
-    vgraph = iri_verify_graph(core_digest)
+    contract_tag = receipt["receipt"]
+    judgement_digest = sm.sha256_hex(sm.jcs({"receipt": contract_tag,
+                                             "core": core}))
+    vgraph = iri_verify_graph(judgement_digest)
     g = Graph()
 
     emitted_kinds = set()
@@ -301,13 +312,17 @@ def _project_validated(view, cas) -> tuple:
     ungrounded_bindings = 0
 
     # verification graph: the receipt itself, mechanically produced
-    rnode = iri_receipt(core_digest)
+    rnode = iri_receipt(judgement_digest)
     g.add(rnode, RDF_TYPE, _iri(SEV + "VerificationReceipt"), vgraph)
     emitted_kinds.add("verification-receipt")
     g.add(rnode, SEV + "grade", _lit(core["grade"]), vgraph)
     g.add(rnode, SEV + "ok", _lit(core["ok"]), vgraph)
     g.add(rnode, SEV + "subrootDescriptorDigest",
           _lit(core["subroot_descriptor_digest"]), vgraph)
+    # the contract this judgement was rendered under, as a fact IN the graph
+    # and not only as a key nobody can read back out of an opaque digest
+    g.add(rnode, SEV + "contract", _lit(contract_tag), vgraph)
+    g.add(rnode, SEV + "receiptCoreDigest", _lit(core_digest), vgraph)
 
     unverified = 0
     exclusions = []
@@ -485,10 +500,13 @@ def _project_validated(view, cas) -> tuple:
             # rather than borrowing one from another module.
             grounded = (core["grade"] == "settlement"
                         and sm._is_hex64(core.get("trust_config_digest")))
-            if sig["valid"] is True and sig["binding"] == "bound" \
-                    and not grounded:
+            # A-1 is about the BASIS, not about the direction: without key
+            # state Warrant does not know a key is `unbound` either. Checking
+            # only `bound` left `@v0`/base/null + `unbound` reported as an
+            # ordinary unbound signature, when in truth nothing established
+            # even that (round 21 P1).
+            if sig["binding"] in ("bound", "unbound") and not grounded:
                 ungrounded_bindings += 1
-                unattributed_nodes += 1
                 g.add(node, WRT + "claimedSigner", _lit(actor_id), vgraph)
                 continue
             if sig["valid"] is True and sig["binding"] == "bound":
@@ -537,7 +555,7 @@ def _project_validated(view, cas) -> tuple:
             # prov:used / prov:wasInformedBy, whose PROV domain is Activity)
             # made the graph assert a run under entailment — the exact
             # "re-ran ≠ was not executed" collapse warrant SPEC §7 forbids.
-            assess = iri_assessment(core_digest, wid, reason["ptr"],
+            assess = iri_assessment(judgement_digest, wid, reason["ptr"],
                                     reason["reason_digest"])
             emitted_kinds.add("execution-assessment")
             g.add(assess, RDF_TYPE, _iri(SEV + "ExecutionAssessment"), vgraph)
@@ -551,7 +569,7 @@ def _project_validated(view, cas) -> tuple:
             if o["re_execution"] not in ("matched", "mismatched"):
                 continue        # nothing ran: no Activity, no PROV relations
 
-            run = iri_run(core_digest, wid, reason["ptr"],
+            run = iri_run(judgement_digest, wid, reason["ptr"],
                           reason["reason_digest"], sem)
             emitted_kinds.add("check-run")
             g.add(run, RDF_TYPE, _iri(SIGMA + "CheckRun"), vgraph)
@@ -680,16 +698,22 @@ def _project_validated(view, cas) -> tuple:
     # entries it counted signatures on excluded records and then described
     # them as carrying `wrt:claimedSigner` — a statement about a node the
     # graph does not contain (round 17 P1).
+    # The two reasons for withholding attribution are MUTUALLY EXCLUSIVE, and
+    # were not: an ungrounded signature raised both, so the manifest said
+    # "reports bound without a trust basis" and "is not both valid and bound"
+    # about the same node — the second literally false (round 21 P1).
     if ungrounded_bindings:
-        qualified.append(loss("L-UNGROUNDED", "%d signature(s) report `bound` "
-                                              "under a contract that does not "
-                                              "require a trust basis (@v0); the "
-                                              "receipt is conformant, but no "
-                                              "agent is minted from it"
+        qualified.append(loss("L-UNGROUNDED", "%d signature(s) report bound or "
+                                              "unbound under a contract that "
+                                              "does not require a trust basis; "
+                                              "the receipt is conformant, but "
+                                              "nothing grounds the binding, so "
+                                              "no agent is minted from it"
                               % ungrounded_bindings))
     if unattributed_nodes:
         qualified.append(loss("L-UNBOUND", "%d projected signature(s) are not both "
-                                           "valid and bound, so no agent is "
+                                           "valid and bound under a grounding "
+                                           "contract, so no agent is "
                                            "attributed; they carry "
                                            "wrt:claimedSigner instead"
                               % unattributed_nodes))
@@ -738,7 +762,9 @@ def _project_validated(view, cas) -> tuple:
         "bundle_root": snapshot["bundle_root"],
         "receipts": [{"protocol": "warrant",
                       "subroot_descriptor_digest": core["subroot_descriptor_digest"],
+                      "contract": contract_tag,
                       "receipt_core_digest": core_digest,
+                      "judgement_digest": judgement_digest,
                       "grade": core["grade"]}],
         "unjudged_subroots": unjudged,
         "sources_in_receipts": len(sources),
@@ -3737,6 +3763,95 @@ def run_vectors():
                   and "prov#wasAttributedTo" in _res_ok["nquads"].decode()
                   and "L-UNGROUNDED" not in
                   [e["code"] for e in _res_ok["loss_manifest"]["entries"]])
+    # The wire tag must survive INTO the projection. Keying identity on the
+    # core bytes alone made a @v0 and a @v1 judgement byte-identical — same
+    # receipt node, same verification graph, same manifest — so the version
+    # distinction introduced at the input vanished at the output.
+    rcV1b = {"receipt": "warrant.verification-receipt@v1",
+             "core": json.loads(json.dumps(rcV["core"])),
+             "producer": json.loads(json.dumps(rcV["producer"]))}
+    for _sg in [s for s in rcV1b["core"]["sources"]
+                if s.get("signatures")][0]["signatures"]:
+        _sg["binding"] = "unverified"          # legal under both contracts
+    rcV0b = dict(rcV1b, receipt="warrant.verification-receipt@v0")
+    resA, fA = _project_objects(snV, rcV0b, csV)
+    resB2, fB5 = _project_objects(snV, rcV1b, csV)
+    sm.check_equal("both contracts accept this core", (fA, fB5), ([], []))
+    sm.check_true("...but the projections are NOT interchangeable",
+                  lambda: resA["nquads"] != resB2["nquads"])
+    sm.check_true("...the verification graph is keyed per contract",
+                  lambda: {ln.rsplit("<", 1)[1] for ln in
+                           resA["nquads"].decode().splitlines()}
+                  != {ln.rsplit("<", 1)[1] for ln in
+                      resB2["nquads"].decode().splitlines()})
+    sm.check_true("...and the tag is readable, not only hashed",
+                  lambda: "warrant.verification-receipt@v0" in
+                  resA["nquads"].decode()
+                  and resA["view_manifest"]["receipts"][0]["contract"]
+                  == "warrant.verification-receipt@v0")
+    # Not just "the documents differ" — every JUDGEMENT-scoped node must
+    # differ. Keying the graph term alone while the receipt node, the run and
+    # the assessment stayed content-keyed would still change the bytes, so a
+    # whole-document comparison passes while two contracts' judgements share
+    # subject IRIs and merge on union.
+    def _judgement_subjects(res):
+        out = set()
+        for ln in res["nquads"].decode().splitlines():
+            subj = ln.split(" ")[0]
+            if any(m in subj for m in ("urn:sev:receipt:", "urn:sigma:run:",
+                                       "urn:sev:assess:")):
+                out.add(subj)
+        return out
+    sm.check_true("...and every judgement-scoped node differs, not just bytes",
+                  lambda: len(_judgement_subjects(resA)) > 0
+                  and not (_judgement_subjects(resA)
+                           & _judgement_subjects(resB2)))
+    # ...over a fixture that emits runs and assessments too, since the
+    # upstream one emits neither and left both keyings unobserved
+    snK, rcK, csK = ski_fixture()
+    rcK1 = {"receipt": "warrant.verification-receipt@v1",
+            "core": json.loads(json.dumps(rcK["core"])),
+            "producer": json.loads(json.dumps(rcK["producer"]))}
+    resK0, _ = _project_objects(snK, rcK, csK)
+    resK1, _ = _project_objects(snK, rcK1, csK)
+    sm.check_true("...including run and assessment provenance",
+                  lambda: len([x for x in _judgement_subjects(resK0)
+                               if "run:" in x or "assess:" in x]) >= 2
+                  and not (_judgement_subjects(resK0)
+                           & _judgement_subjects(resK1)))
+    sm.check_true("...while the core CONTENT digest stays the same in both",
+                  lambda: resA["view_manifest"]["receipts"][0]["receipt_core_digest"]
+                  == resB2["view_manifest"]["receipts"][0]["receipt_core_digest"]
+                  and resA["view_manifest"]["receipts"][0]["judgement_digest"]
+                  != resB2["view_manifest"]["receipts"][0]["judgement_digest"])
+
+    # Attribution is withheld for exactly one reason at a time. An ungrounded
+    # signature used to raise BOTH codes, so the manifest said "reports bound
+    # without a trust basis" and "is not both valid and bound" about one
+    # node — the second literally false.
+    for _label, _binding, _settle, _want, _attr in (
+            ("ungrounded bound", "bound", False, ["L-UNGROUNDED"], False),
+            ("ungrounded unbound", "unbound", False, ["L-UNGROUNDED"], False),
+            ("grounded bound", "bound", True, [], True),
+            ("grounded unbound", "unbound", True, ["L-UNBOUND"], False),
+            ("unverified", "unverified", False, ["L-UNBOUND"], False)):
+        snM, rcM, csM = fixture(settlement=_settle)
+        for _sg in [s for s in rcM["core"]["sources"]
+                    if s.get("signatures")][0]["signatures"]:
+            _sg["binding"] = _binding
+        resM, fM2 = _project_objects(snM, rcM, csM)
+        sm.check_equal("attribution reasons are exclusive: %s" % _label,
+                       [e["code"] for e in resM["loss_manifest"]["entries"]
+                        if e["code"] in ("L-UNGROUNDED", "L-UNBOUND")], _want)
+        sm.check_equal("...and attribution follows the same rule: %s" % _label,
+                       "prov#wasAttributedTo" in resM["nquads"].decode(), _attr)
+        # the note must be true of the node it describes, not merely present
+        for _e in resM["loss_manifest"]["entries"]:
+            if _e["code"] == "L-UNGROUNDED":
+                sm.check_true("...and L-UNGROUNDED does not claim invalidity"
+                              " (%s)" % _label,
+                              lambda _e=_e: "not both valid" not in _e["note"])
+
     sm.check_true("an unknown contract tag is refused, never guessed",
                   lambda: _resX3 is None
                   and any(x["code"] == "BAD_TYPE_TAG" for x in fX3))

@@ -475,3 +475,89 @@ receipts, so no vector can isolate it.
 **Frozen SHA `1fb82d6` does not move, and will not.** `@v1` is a proposed
 contract beside it, not a replacement of it — ratification freezes a new
 artifact and leaves the old one exactly where it is.
+
+---
+
+# Round 21 closure — Codex, target `7a6c069` (PR #6), verdict AMEND
+
+**3 P1**, all connected, all reproduced before any change. Round 20 closed
+the silent fork in the *validator*; round 21 found that the version then
+disappeared at the next boundary and that the promise made about ungrounded
+bindings was only half kept.
+
+## P1-1 — the projection erased the wire tag
+
+Reproduced on the public `project_bytes()`: a `@v0` and a `@v1` receipt over
+the same core produced **byte-identical** projections — same receipt node,
+same verification graph, same view manifest, same loss manifest.
+
+The cause is a one-line assumption I never revisited: identity was
+`sha256(JCS(core))`, so it answered *"which bytes"* and was used to mean
+*"which judgement"*. Those stopped being the same question the moment two
+contracts could judge one core. The distinction round 20 introduced at the
+input vanished in provenance — the one place it has to survive.
+
+**Disposition.** Two digests, because they answer two questions:
+
+- `receipt_core_digest = sha256(JCS(core))` — **content** identity, kept and
+  still emitted (`sev:receiptCoreDigest`, and in the manifest).
+- `judgement_digest = sha256(JCS({"receipt": tag, "core": core}))` —
+  **judgement** identity. It keys the receipt node, the verification graph,
+  and run/assessment provenance.
+
+The receipt node also carries `sev:contract` with the tag itself, so a
+consumer reads the contract rather than inferring it from an opaque digest.
+
+**A vector of mine was too coarse and mutation said so.** Comparing whole
+documents passed while the receipt node, the run and the assessment were
+still content-keyed — the graph *term* alone had changed, so the bytes
+differed and the check was satisfied. The vector now asserts that the sets of
+judgement-scoped **subjects** are disjoint, over a fixture that emits runs
+and assessments; the upstream fixture emits neither, which is why two
+keyings sat unobserved.
+
+## P1-2 — `unbound` was not treated as ungrounded
+
+Reproduced: `@v0` / base / null trust with `valid: true, binding: "unbound"`
+gave `L-UNBOUND` and no `L-UNGROUNDED`.
+
+A-1's own reasoning is that without key state Warrant does not know a key is
+*unbound* either. I wrote that sentence in round 19 and then implemented the
+check against `bound` alone. **Disposition:** any `bound` or `unbound`
+without a trust basis is ungrounded.
+
+## P1-3 — one node, two contradictory reasons
+
+The same signature raised `L-UNGROUNDED` *and* `L-UNBOUND`, the latter
+reading "is not both valid and bound" about a signature the receipt reports
+as exactly that. Ungrounded signatures were incrementing the unattributed
+counter as well as their own.
+
+**Disposition — the reasons are now mutually exclusive**, and vectored as an
+exact code set rather than a presence check:
+
+| state | codes | attribution |
+|---|---|---|
+| grounded + valid + bound | — | yes |
+| ungrounded `bound`/`unbound` | `L-UNGROUNDED` | no |
+| grounded `unbound`, `unverified`, invalid | `L-UNBOUND` | no |
+
+A further vector asserts the `L-UNGROUNDED` note does not contain the
+falsehood it used to sit beside.
+
+## Mutation results
+
+12/12 fail: identity dropping the tag, verification graph / receipt node /
+run / assessment each keyed on content instead of judgement, tag missing
+from the graph, tag missing from the manifest, ungrounded checking `bound`
+only, ungrounded double-counting, and the `L-UNGROUNDED` note reinstating
+the false clause.
+
+## State
+
+110 model + 350 projector + 18 fixtures + 29 adapter, all green. Live store:
+81 sources, **1179 quads** (the two new receipt-node facts), 0 errors /
+16 warnings.
+
+**`@v1` is still not ratified and #6 is still stacked on the open #5.**
+Neither is mine to resolve.
