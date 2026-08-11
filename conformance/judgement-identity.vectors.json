@@ -93,5 +93,6 @@
         "manifest_contract": "warrant.verification-receipt@v1"
       }
     }
-  ]
+  ],
+  "rule_is_prose": "`rule` and `note` are PROSE. The harness does not execute them and cannot: editing this text to say the opposite leaves every case green, which is the same rot that made the profile disagree with the code for four consecutive rounds. The CONTRACT is `cases` — each one carries the exact bytes and the exact expected outcome, and the harness replays them. Read the prose to understand the intent; trust only the cases."
 }

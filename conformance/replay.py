@@ -20,7 +20,7 @@ class FixtureRefused(Exception):
     """The fixture file is not readable under its own contract."""
 
 
-def load_fixtures(name, family, case_keys, root_keys=()):
+def load_fixtures(name, family, case_keys, root_keys=(), nested=None):
     """THE strict reader for every `*.vectors.json`.
 
     This repository refuses a receipt for a duplicate member, a BOM, trailing
@@ -69,6 +69,19 @@ def load_fixtures(name, family, case_keys, root_keys=()):
             raise FixtureRefused(
                 "%s: case %d has members %s, expected exactly %s"
                 % (name, i, sorted(case), sorted(case_keys)))
+        # NESTED objects too. Closing root and case while leaving their
+        # children open means an unknown member merely has to sit one level
+        # down to be accepted — the same half-check as before, moved inward
+        # (round 26 P2).
+        for key, want in (nested or {}).items():
+            child = case.get(key)
+            if not isinstance(child, dict):
+                raise FixtureRefused("%s: case %d member %r is not an object"
+                                     % (name, i, key))
+            if set(child) != set(want):
+                raise FixtureRefused(
+                    "%s: case %d member %r has %s, expected exactly %s"
+                    % (name, i, key, sorted(child), sorted(want)))
     return obj
 
 
@@ -138,8 +151,8 @@ def loader_selftest():
         saved, globals()["HERE"] = HERE, tmp
         try:
             load_fixtures(name, family, keys,
-                          root_keys=("rule", "minted_only_when",
-                                     "helper_totality"))
+                          root_keys=("rule", "rule_is_prose",
+                                     "minted_only_when", "helper_totality"))
             print("FAIL  loader accepts %s" % label)
             ok = False
         except FixtureRefused as exc:
@@ -191,7 +204,7 @@ def main():
     import sev_projector as sp
     actor_fx = load_fixtures("actor-iri.vectors.json", "sev.actor-iri@v0",
                              ("name", "actor_b64", "iri"),
-                             root_keys=("rule", "minted_only_when",
+                             root_keys=("rule", "rule_is_prose", "minted_only_when",
                                         "helper_totality"))
     for case in actor_fx["cases"]:
         actor = b64(case["actor_b64"], "actor-iri/%s" % case["name"]).decode("utf-8")
@@ -220,13 +233,14 @@ def main():
                              "sev.judgement-identity@v0",
                              ("name", "contract", "snapshot_b64",
                               "receipt_b64", "cas", "expect"),
-                             root_keys=("rule",))
+                             root_keys=("rule", "rule_is_prose"))
     promo_fx = load_fixtures("signature-promotion.vectors.json",
                              "sev.signature-promotion@v0",
                              ("name", "contract", "grade",
                               "trust_config_digest", "signature",
                               "snapshot_b64", "receipt_b64", "cas", "expect"),
-                             root_keys=("rule", "loss_codes"))
+                             root_keys=("rule", "rule_is_prose", "loss_codes"),
+                             nested={"signature": ("valid", "binding")})
 
     for case in ident_fx["cases"]:
         res, findings = sp.project_bytes(
@@ -331,6 +345,17 @@ def main():
             b64(case["snapshot_b64"], case["name"]),
             b64(case["receipt_b64"], case["name"]), _cas(case))
         exp = case["expect"]
+        # `expect` is a sum type: a refusal carries one member, a projection
+        # carries six. Closing it needs the arms named, not a single key set.
+        arms = {frozenset(("receipt_refused",)),
+                frozenset(("receipt_refused", "record_projected",
+                           "attribution", "actor_iri_minted",
+                           "claimed_signer", "loss_codes"))}
+        if frozenset(exp) not in arms:
+            print("FAIL  signature-promotion: %s has an unknown `expect` shape"
+                  % case["name"])
+            failed += 1
+            continue
         if exp["receipt_refused"] is not None:
             ok = (res is None
                   and sorted({x["code"] for x in findings})

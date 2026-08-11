@@ -892,3 +892,45 @@ All four suites green **by exit status**, verified in the same command chain
 as the commit.
 
 **`@v1` unratified; #6 still stacked on the open #5.**
+
+---
+
+# Round 26 — Codex, target `83f4df5` (PR #6): **APPROVE**, no P1
+
+The reviewer's non-blocking P2 is closed here rather than carried, because
+it is the same class this whole sequence has been about.
+
+## P2 — the schema was closed at the levels I had looked at
+
+Reproduced both: rewriting `"rule"` to *"attribute iff false"* left every
+case green, and an extra member inside a case's `signature` object was
+accepted.
+
+Closing root and case while leaving their children open means an unknown
+member only has to sit **one level down** to be accepted — the same
+half-check as round 25, moved inward. `signature` is now closed to exactly
+`{valid, binding}`, and `expect` is closed per **arm**: a refusal carries
+one member, a projection carries six, and any other shape fails. A sum type
+needs its arms named; one key set could not close it.
+
+## The `rule` field
+
+It reads normative and is not executed — and cannot be. Rather than delete
+it (the intent is worth reading) or pretend to check it, every fixture file
+now carries `rule_is_prose`, which says so in the file itself: **the
+contract is `cases`**, each carrying exact bytes and exact expected
+outcomes, replayed by the harness; the prose is there to explain intent and
+is trusted for nothing. Removing that label fails the suite, so the
+disclaimer cannot quietly disappear.
+
+## Worth recording: the controls caught my own change
+
+Adding `rule_is_prose` broke two loader controls, and they reported
+**"refuses … for the WRONG reason"** rather than passing or failing
+opaquely. That is exactly what round 25 added reason-assertions for, working
+on the first change after it landed.
+
+## State
+
+All four suites green by exit status. Landing order from the reviewer: PR #5
+first, then rebase #6 onto the new master and merge.
