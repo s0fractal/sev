@@ -924,6 +924,19 @@ def validate_receipt_core(core, descriptor=None, cas=None, view=None) -> list:
             good_sigs.append(s)
             if s["valid"] is False and s["binding"] == "bound":
                 _f(f, "BINDING_WITHOUT_VALIDITY", sat)
+            # A binding is a claim about key→actor association, and Warrant
+            # can only make it from key state. Without a pinned trust config
+            # it reports `unverified` for everything; with one it reports
+            # `bound` or `unbound`. The receipt could previously assert
+            # `bound` at base grade with `trust_config_digest: null` — a
+            # state no verifier can produce — and the projector then minted a
+            # `prov:Agent` from it. **This is an amendment to a FROZEN
+            # contract** (round 18 P1); see the freeze table in README.
+            if s["valid"] is True:
+                if grade == "base" and s["binding"] != "unverified":
+                    _f(f, "BINDING_WITHOUT_TRUST", sat)
+                elif grade == "settlement" and s["binding"] == "unverified":
+                    _f(f, "UNVERIFIED_UNDER_TRUST", sat)
         _ordered(f, good_sigs, lambda s: (s["sig_digest"], s["multiplicity"]),
                  "SIGNATURES_NOT_SORTED", at + "/signatures")
         # One-way internal-consistency rule, no cryptography involved: if the

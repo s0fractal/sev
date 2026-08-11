@@ -72,7 +72,7 @@ own clean round:
 | Artifact | Scope | Status |
 |---|---|---|
 | `ecosystem.snapshot@v0` **byte core** | logical-path and prefix rules, subroot descriptor + domain-separated digest, snapshot object with its normative array orders and self-hash, `parse_strict`'s complete refusal set | **FROZEN** at `7935400` — clean §7 gate, Kimi round 7 re-gate, zero P1 |
-| `warrant.verification-receipt@v0` core | receipt core invariants, envelope/body binding, counts, source union, and acknowledged invalid evidence | **FROZEN** at `1fb82d6` — exact-SHA gate of `4e09d7d`, merged unchanged through PR #2; zero P1 |
+| `warrant.verification-receipt@v0` core | receipt core invariants, envelope/body binding, counts, source union, and acknowledged invalid evidence | **FROZEN** at `1fb82d6` — exact-SHA gate of `4e09d7d`, merged unchanged through PR #2; zero P1. **One amendment is proposed and NOT ratified** (round 18 P1): a valid signature's `binding` must match its trust basis — `unverified` at base grade, `bound`/`unbound` only under a pinned trust config. It closes a state no verifier can produce but the core accepted, and from which the projector minted a `prov:Agent`. It is a change to a frozen invariant and needs an explicit ratification decision, not a merge |
 | MVP projector | what `model/sev_projector.py` actually emits, per `mvp_predicates` in the shapes file | **not frozen** |
 | Full `sev@v0` target profile | every class and predicate in `conformance/prov-shapes.json`, including the OAIP/BOS quadrants | **not frozen**, and expected to move longest |
 
