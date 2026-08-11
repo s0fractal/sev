@@ -47,10 +47,15 @@ def load_fixtures(name, family, case_keys, root_keys=()):
     if obj.get("vectors") != family:
         raise FixtureRefused("%s: family tag is %r, expected %r"
                              % (name, obj.get("vectors"), family))
-    allowed = set(root_keys) | {"vectors", "cases", "note"}
-    extra = sorted(set(obj) - allowed)
-    if extra:
-        raise FixtureRefused("%s: unexpected root members %s" % (name, extra))
+    # EXACT key sets, both levels. "Closed schema" previously meant "no extra
+    # root members": a root field could be deleted and any case could carry
+    # anything at all, so `attacker_extra: true` in a case and a missing root
+    # `rule` both replayed ALL PASS (round 25 P1). A schema that only forbids
+    # addition at one level is not closed.
+    want_root = set(root_keys) | {"vectors", "cases", "note"}
+    if set(obj) != want_root:
+        raise FixtureRefused("%s: root members %s, expected exactly %s"
+                             % (name, sorted(obj), sorted(want_root)))
     if not isinstance(obj.get("cases"), list) or not obj["cases"]:
         # the word is load-bearing: a negative control asserts this exact
         # refusal, so an empty corpus keeps failing for the REASON it fails
@@ -60,10 +65,10 @@ def load_fixtures(name, family, case_keys, root_keys=()):
     for i, case in enumerate(obj["cases"]):
         if not isinstance(case, dict):
             raise FixtureRefused("%s: case %d is not an object" % (name, i))
-        missing = sorted(set(case_keys) - set(case))
-        if missing:
-            raise FixtureRefused("%s: case %d is missing %s"
-                                 % (name, i, missing))
+        if set(case) != set(case_keys):
+            raise FixtureRefused(
+                "%s: case %d has members %s, expected exactly %s"
+                % (name, i, sorted(case), sorted(case_keys)))
     return obj
 
 
@@ -99,20 +104,33 @@ def loader_selftest():
         raw = fh.read()
     family = "sev.actor-iri@v0"
     keys = ("name", "actor_b64", "iri")
+    # Each control names the REASON it expects, not merely `FixtureRefused`.
+    # The empty-case control used to build its probe by inserting a second
+    # root member, so the loader rejected it as an unexpected member and
+    # never reached the empty-case branch — a control passing on the wrong
+    # refusal, which is a control testing nothing (round 25 P2).
+    empty = json.loads(raw.decode("utf-8"))
+    empty["cases"] = []
     mutations = [
-        ("a wrong family tag",
+        ("a wrong family tag", "family tag",
          raw.replace(b'"sev.actor-iri@v0"', b'"sev.signature-promotion@v0"', 1)),
-        ("a duplicated family member",
+        ("a duplicated family member", "DUPLICATE_MEMBER",
          raw.replace(b'"vectors": "sev.actor-iri@v0",',
                      b'"vectors": "hostile", "vectors": "sev.actor-iri@v0",', 1)),
-        ("an unexpected root member",
+        ("an unexpected root member", "root members",
          raw.replace(b'"vectors":', b'"surprise": 1,\n  "vectors":', 1)),
-        ("an empty case list", raw.replace(b'"cases": [', b'"cases": [], "unused": [', 1)),
-        ("a BOM", b"\xef\xbb\xbf" + raw),
-        ("trailing bytes", raw.rstrip() + b" x"),
+        ("a missing root member", "root members",
+         raw.replace(b'"rule":', b'"unused_rule":', 1)),
+        ("an unexpected case member", "case 0 has members",
+         raw.replace(b'{\n      "name": "unreserved',
+                     b'{\n      "attacker_extra": true,\n      "name": "unreserved', 1)),
+        ("an empty case list", "vacuous",
+         json.dumps(empty).encode("utf-8")),
+        ("a BOM", "BOM_PRESENT", b"\xef\xbb\xbf" + raw),
+        ("trailing bytes", "TRAILING_DATA", raw.rstrip() + b" x"),
     ]
     ok = True
-    for label, blob in mutations:
+    for label, expect, blob in mutations:
         tmp = tempfile.mkdtemp()
         name = "probe.vectors.json"
         with open(os.path.join(tmp, name), "wb") as fh:
@@ -124,8 +142,13 @@ def loader_selftest():
                                      "helper_totality"))
             print("FAIL  loader accepts %s" % label)
             ok = False
-        except FixtureRefused:
-            print("PASS  loader refuses %s" % label)
+        except FixtureRefused as exc:
+            if expect not in str(exc):
+                print("FAIL  loader refuses %s for the WRONG reason (%s)"
+                      % (label, exc))
+                ok = False
+            else:
+                print("PASS  loader refuses %s" % label)
         finally:
             globals()["HERE"] = saved
     for label, payload in (("a non-alphabet character", "!!!!QUJD"),
@@ -250,11 +273,17 @@ def main():
         receipt, _rf = sm.parse_strict(b64(case["receipt_b64"], case["name"]))
         core = receipt["core"]
         sig = [s for s in core["sources"] if s.get("signatures")][0]["signatures"][0]
-        return (receipt["receipt"], core["grade"], sig["valid"], sig["binding"])
+        # `trust_config_digest` is IN the coordinate, not beside it: pinned
+        # trust is the pivot of the grounding rule, and the decorative copy
+        # could be swapped from null to a hex64 with the bytes unchanged and
+        # the replay still green (round 25 P2)
+        return (receipt["receipt"], core["grade"], core["trust_config_digest"],
+                sig["valid"], sig["binding"])
 
     TAGS = ("warrant.verification-receipt@v0", "warrant.verification-receipt@v1")
     want_identity = {(t, r) for t in TAGS for r in ("no-run", "check-run")}
-    want_promotion = {(t, g, v, b) for t in TAGS
+    want_promotion = {(t, g, "c" * 64 if g == "settlement" else None, v, b)
+                      for t in TAGS
                       for g in ("base", "settlement")
                       for v in (True, False)
                       for b in ("bound", "unbound", "unverified")}
@@ -274,6 +303,7 @@ def main():
         for case, c in zip(fx["cases"], got):
             if name == "signature-promotion":
                 claimed = (case["contract"], case["grade"],
+                           case["trust_config_digest"],
                            case["signature"]["valid"],
                            case["signature"]["binding"])
             else:

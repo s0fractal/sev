@@ -3962,8 +3962,14 @@ def run_vectors():
         "shutil.copytree(os.path.join(here, '..', 'conformance'),\n"
         "                os.path.join(d, 'conformance'))\n"
         "d = os.path.join(d, 'conformance')\n"
-        "json.dump({'vectors': 'sev.parse-strict@v0', 'cases': []},\n"
-        "          open(os.path.join(d, 'parse-strict.vectors.json'), 'w'))\n"
+        # empty the REAL fixture's cases rather than hand-writing a probe:
+        # the root schema is exact now, so a minimal object is rejected as a
+        # wrong root-member set and never reaches the empty-case branch --
+        # the control would pass on the wrong refusal again (round 25)
+        "f = os.path.join(d, 'parse-strict.vectors.json')\n"
+        "doc = json.load(open(f))\n"
+        "doc['cases'] = []\n"
+        "json.dump(doc, open(f, 'w'))\n"
         "p = subprocess.run([sys.executable, os.path.join(d, 'replay.py')],\n"
         "                   capture_output=True, text=True,\n"
         "                   env=dict(os.environ, PYTHONPATH=os.path.join(here)))\n"
