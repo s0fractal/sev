@@ -621,8 +621,73 @@ evidence. It is a second copy of the prose, in JSON.
 
 ## State
 
-110 model + 350 projector + **66 fixtures** (11 parse-strict + 7 actor-iri +
-4 judgement-identity + 24 signature-promotion, with 20 more replayed rows) +
-29 adapter, all green.
+110 model + 350 projector + **46 fixture cases** (11 parse-strict +
+7 actor-iri + 4 judgement-identity + 24 signature-promotion) + 29 adapter,
+all green.
+
+**`@v1` unratified; #6 still stacked on the open #5.**
+
+---
+
+# Round 23 closure — Codex, target `04c54ef` (PR #6), verdict AMEND
+
+**2 P1 + 1 P2.** Round 22 made the fixtures run the product; round 23 found
+the gate does not defend the corpus they run *over*.
+
+## P1-1 — a gutted corpus stayed green
+
+Reproduced by deleting cells: the load-bearing `v1/base valid=true
+binding=bound` row, and then **every** `@v1` identity case. Exit 0 both
+times, with `"every contract yields a distinct judgement"` passing over a
+single contract and a `"full 24-row cross"` running 23 rows.
+
+My guards checked that the rows present were self-consistent — uniqueness
+among whatever digests were there, and `projected_rows >= 6`. A floor is not
+a matrix. Neither guard could notice a hole, which makes them guards against
+corruption and not against omission, and omission is the cheaper failure.
+
+**Disposition.** Coordinates are now **derived from the receipt bytes**, not
+read from the metadata beside them, and compared against the exact Cartesian
+product: `{@v0,@v1} × {no-run,check-run}` for identity, `{@v0,@v1} ×
+{base,settlement} × {true,false} × {bound,unbound,unverified}` for
+promotion. Missing cells, extra cells and duplicate coordinates each fail
+independently.
+
+Deriving from bytes matters on its own: a case can *claim* any coordinate.
+So the metadata is checked against the derivation too — decoration that
+contradicts the bytes misleads whoever reads the file instead of running it.
+
+Four mutation controls, all failing as they must: delete one cell, replace a
+cell with a duplicate coordinate, remove every `@v1` case, and make the
+metadata contradict its own bytes.
+
+## P1-2 — three more copies of the promotion rule
+
+The `L-UNBOUND` wording I fixed in the Python note was still verbatim in the
+profile's loss table; the actor row still said "before a `valid && bound`
+signature"; and `prov-shapes.json` asserted both that attribution needs only
+valid+bound **and** that the receipt licenses no promotion at all — two
+statements that were each true once and are now both false.
+
+Profile texts corrected. The shapes note no longer restates the rule at all:
+it points at `signature-promotion.vectors.json` and says why, naming its own
+superseded copy as the argument against keeping another.
+
+## P2 — the fixture count was inflated
+
+I wrote "66 fixtures (… with 20 more replayed rows)". The harness runs
+**46 cases** and prints 48 PASS lines — the two extra are the aggregate
+completeness checks added this round. Corrected in place rather than
+quietly.
+
+Worth naming plainly: I inflated a count in the same round file that argues
+for honest accounting, and no guard caught it because prose counts are not
+gated. The repository has a stale-count guard for `README.md`; this file is
+outside its scope, and I am not widening that guard on my own initiative —
+it is a real gap, and it is reported rather than patched sideways.
+
+## State
+
+110 model + 350 projector + **46 fixture cases** + 29 adapter, all green.
 
 **`@v1` unratified; #6 still stacked on the open #5.**

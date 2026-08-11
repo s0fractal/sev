@@ -101,11 +101,61 @@ def main():
               % ("PASS" if ok else "FAIL", case["name"],
                  "" if ok else "  (%s)" % why))
         failed += 0 if ok else 1
-    distinct = {c["expect"]["judgement_digest"] for c in ident_fx["cases"]}
-    ok = len(distinct) == len(ident_fx["cases"])
-    print("%s  judgement-identity: every contract yields a distinct judgement"
-          % ("PASS" if ok else "FAIL"))
-    failed += 0 if ok else 1
+    # Completeness, derived from the RECEIPT BYTES rather than from the
+    # metadata beside them. Guarding only "the rows present are consistent"
+    # let a corpus be gutted and stay green: deleting every `@v1` identity
+    # case made "every contract yields a distinct judgement" pass over one
+    # contract (round 23 P1). A coordinate a case merely *claims* is not
+    # evidence; the coordinate it *is* comes from what it ships.
+    def _coord_identity(case):
+        receipt = json.loads(base64.b64decode(case["receipt_b64"]).decode("utf-8"))
+        res, _f = sp.project_bytes(base64.b64decode(case["snapshot_b64"]),
+                                   base64.b64decode(case["receipt_b64"]),
+                                   _cas(case))
+        runs = res is not None and "check-run" in res["view_manifest"]["coverage"]["emitted"]
+        return (receipt["receipt"], "check-run" if runs else "no-run")
+
+    def _coord_promotion(case):
+        receipt = json.loads(base64.b64decode(case["receipt_b64"]).decode("utf-8"))
+        core = receipt["core"]
+        sig = [s for s in core["sources"] if s.get("signatures")][0]["signatures"][0]
+        return (receipt["receipt"], core["grade"], sig["valid"], sig["binding"])
+
+    TAGS = ("warrant.verification-receipt@v0", "warrant.verification-receipt@v1")
+    want_identity = {(t, r) for t in TAGS for r in ("no-run", "check-run")}
+    want_promotion = {(t, g, v, b) for t in TAGS
+                      for g in ("base", "settlement")
+                      for v in (True, False)
+                      for b in ("bound", "unbound", "unverified")}
+    for fx, coord, want, name in ((ident_fx, _coord_identity, want_identity,
+                                   "judgement-identity"),
+                                  (promo_fx, _coord_promotion, want_promotion,
+                                   "signature-promotion")):
+        got = [coord(c) for c in fx["cases"]]
+        # the human-readable fields beside each case are decoration, and
+        # decoration that contradicts the bytes misleads whoever reads the
+        # file instead of running it
+        for case, c in zip(fx["cases"], got):
+            claimed = (case.get("contract"), case.get("grade"),
+                       (case.get("signature") or {}).get("valid"),
+                       (case.get("signature") or {}).get("binding"))
+            claimed = tuple(x for x in claimed if x is not None)
+            derived = tuple(x for x in c if not isinstance(x, str)
+                            or x not in ("no-run", "check-run"))
+            if len(claimed) == len(derived) and claimed != derived:
+                print("FAIL  %s: metadata contradicts its own bytes (%s)"
+                      % (name, case.get("name")))
+                failed += 1
+        dupes = sorted({c for c in got if got.count(c) > 1})
+        missing = sorted(want - set(got))
+        extra = sorted(set(got) - want)
+        ok = not dupes and not missing and not extra
+        print("%s  %s: the corpus is the exact matrix (%d cells)"
+              % ("PASS" if ok else "FAIL", name, len(want)))
+        if not ok:
+            print("      missing=%s extra=%s duplicated=%s"
+                  % (missing[:4], extra[:4], dupes[:4]))
+        failed += 0 if ok else 1
 
     projected_rows = 0
     for case in promo_fx["cases"]:
@@ -134,8 +184,12 @@ def main():
         print("%s  signature-promotion: %s"
               % ("PASS" if ok else "FAIL", case["name"]))
         failed += 0 if ok else 1
-    if projected_rows < 6:
-        print("FAIL  signature-promotion: too few projected rows to be a matrix")
+    # `projected_rows >= 6` was a floor, and a floor is not a matrix — it
+    # passed with a cell deleted. The exact-set check above replaces it; this
+    # only keeps the harness from silently running a corpus in which nothing
+    # projects at all.
+    if projected_rows == 0:
+        print("FAIL  signature-promotion: no row projected — vacuous")
         return 1
 
     if failed:
