@@ -688,6 +688,72 @@ it is a real gap, and it is reported rather than patched sideways.
 
 ## State
 
-110 model + 350 projector + **46 fixture cases** + 29 adapter, all green.
+114 model + 349 projector + 46 fixture cases + 29 adapter, all green.
+
+**`@v1` unratified; #6 still stacked on the open #5.**
+
+---
+
+# Round 24 closure — Codex, target `e0fb16e` (PR #6), verdict AMEND
+
+**1 P1 + 1 P2**, plus a stale count of mine. The finding is the sharpest
+kind: the corpus built to be *language-neutral evidence* was itself read
+fail-open.
+
+## P1 — the fixture wire format had no contract
+
+Reproduced all three mutations; each replayed `ALL PASS`, exit 0:
+
+| mutation | why it slipped |
+|---|---|
+| `sev.judgement-identity@v0` → `sev.signature-promotion@v0` | the family tag was never checked |
+| two `vectors` members, hostile first | `json.load` keeps the last silently |
+| `!!!!` prefixed to `receipt_b64` | `base64.b64decode` ignores non-alphabet characters |
+
+The contradiction is embarrassing and exact: this repository refuses a
+*receipt* for a duplicate member, a BOM, trailing bytes or a lone
+surrogate — and then read **its own conformance corpus** with `json.load`.
+Two honest implementations could read the same "language-neutral" file
+differently (first-wins vs last-wins, strict vs permissive base64, or a
+different fixture family entirely), which is precisely the disagreement the
+corpus exists to prevent.
+
+**Disposition — the fix is not a new parser.** Every `*.vectors.json` now
+goes through one loader built on `parse_strict`, the strict reader this
+repository already owns: duplicate members, BOM, trailing bytes and lone
+surrogates are refused, the `vectors` family tag must match exactly, the
+root and case schemas are closed, and every payload must be canonical padded
+standard base64 — validated alphabet **plus** re-encode equality, so
+non-canonical padding cannot round-trip past it.
+
+**Permanent negative controls**, because a strict reader never shown a bad
+file is indistinguishable from a permissive one: nine cases covering all
+three of the reviewer's mutations plus an unexpected root member, an empty
+case list, a BOM, trailing bytes, non-canonical padding and a non-string
+payload. They run against a temporary copy of a real fixture, so the control
+cannot drift away from the format it guards.
+
+## P2 — deleting a field was cheaper than lying in it
+
+Confirmed. The metadata guard filtered `None` out and compared only when the
+tuple lengths matched, so a *lying* field was caught while **deleting** the
+same field was not. Required fields are now enforced by the loader and
+compared exactly.
+
+## My own stale count
+
+The reviewer also caught `110 model` in my round-23 text; the suite is
+**114**. Measured rather than remembered this time, across all four:
+**114 model + 349 projector + 46 fixture cases + 29 adapter**.
+
+Twice in two rounds I have published a number that was not true. Both times
+it was in the file arguing for honest accounting, and both times a reviewer
+found it rather than a guard. The gap I reported last round — prose counts
+outside `README.md` are ungated — is the same gap, and it is still open.
+
+## State
+
+114 model + 349 projector + 46 fixture cases (57 replay PASS lines: 46 cases
++ 9 loader controls + 2 completeness checks) + 29 adapter, all green.
 
 **`@v1` unratified; #6 still stacked on the open #5.**
