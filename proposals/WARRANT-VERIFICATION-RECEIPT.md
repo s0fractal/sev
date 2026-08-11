@@ -81,7 +81,16 @@ the model, with a refusal vector for the null case.
 
 `core` is byte-reproducible across implementations *relative to* (snapshot,
 trust, grade, declared execution policy); `receipt_core_digest =
-sha256(JCS(core))` is the citable identity. `producer` is host-local and
+sha256(JCS(core))` is its **content** identity.
+
+**It is not, by itself, the identity of a judgement.** Once more than one
+contract can judge one core — `@v0` and `@v1` below — the same core bytes
+carry two different verdicts, so anything that cites a judgement must cite
+the contract with it:
+`judgement_digest = sha256(JCS({"receipt": <wire tag>, "core": <core>}))`.
+A consumer keying provenance on the content digest alone collapses the two,
+which is precisely the fork the tag split exists to prevent. The formula and
+its consequences are data, in `conformance/judgement-identity.vectors.json`. `producer` is host-local and
 carries no cross-implementation agreement.
 
 ## The receipt object (sketch, rev 3)
@@ -479,6 +488,86 @@ the reviewed tree was merged unchanged through PR #2 as `1fb82d6`.
 This freeze covers the receipt core only. It does not freeze the MVP
 projector, the full `sev@v0` target profile, an adapter to live Warrant
 verifier output, or adoption of this upstream proposal by Warrant.
+
+## `warrant.verification-receipt@v1` — A-1, binding requires a trust basis
+
+> **Status: PROPOSED, on its own wire tag.** A-1 does **not** amend `@v0`.
+> The first draft did, and that was wrong in a way worth recording: the same
+> canonical receipt bytes, under the same type tag, were accepted by a
+> `1fb82d6` validator and refused by an amended one, with **nothing on the
+> wire to explain the disagreement**. A contract change that no byte
+> announces is not an amendment — it is a silent fork, and it would have made
+> two honest implementations disagree over sealed evidence with no way to
+> tell which was right.
+>
+> So `@v0` keeps its frozen semantics **permanently**. A receipt bearing
+> `warrant.verification-receipt@v0` is judged by the frozen rules for as long
+> as the tag exists, and nothing here retroactively makes such a receipt
+> non-conformant. A-1 ships as `warrant.verification-receipt@v1`, and a
+> validator dispatches on the tag. Ratifying `@v1` freezes a *new* contract
+> beside the old one; it never moves `@v0`.
+
+### The defect
+
+`binding` states *what is known about the association between a signing key
+and an actor*. Warrant derives that from **key state**, which exists only
+under a pinned trust configuration. The frozen core enforced
+`trust_config_digest == null iff grade == "base"` but placed no constraint
+on `binding`, so a receipt could report
+
+```json
+{ "grade": "base", "trust_config_digest": null,
+  "signatures": [{ "valid": true, "binding": "bound", ... }] }
+```
+
+— a state **no verifier can produce**. A projector consuming it minted a
+`prov:Agent` and an attribution from an assertion nothing licensed.
+
+### The invariant
+
+For every entry of `sources[].signatures[]`:
+
+| `grade` / `trust_config_digest` | permitted `binding` | on violation |
+|---|---|---|
+| `base` / `null` | `unverified` — **for every signature, valid or not** | `BINDING_WITHOUT_TRUST` at `/core/sources/<i>/signatures/<j>` |
+| `settlement` / hex64 | `bound` or `unbound` when `valid: true` | `UNVERIFIED_UNDER_TRUST` at the same locator |
+| `settlement` / hex64 | `unbound` or `unverified` when `valid: false` | — |
+
+Both findings are `ERR`.
+
+### Scope, stated exactly
+
+The base clause is **not** conditioned on `valid`: without key state Warrant
+does not know a key is *unbound* either, only that it is *unverified*, and
+the narrower reading left an invalid co-signature free to claim `unbound` at
+base grade on a record that otherwise projects.
+
+The settlement clause **is** conditioned on `valid: true`, because a
+verifier may legitimately not compute a binding for a signature that failed
+cryptographic verification. That row is *not* unconstrained, and calling it
+so overstated the freedom: `bound` is already forbidden there by the frozen
+`BINDING_WITHOUT_VALIDITY` rule, so the reachable values are `unbound` and
+`unverified`. A-1 adds no further restriction on that row — it only declines
+to add one. If Warrant's real surface turns out to compute
+one regardless, this clause widens the same way the base clause did — that
+is an open question, not a settled reading.
+
+### Relationship to the existing rule
+
+A-1 sits beside `BINDING_WITHOUT_VALIDITY` (`valid: false` with
+`binding: "bound"`), which the frozen core already enforced. The two are
+independent: one forbids a binding stronger than the validity supports, the
+other forbids any binding without a basis to compute it.
+
+### What a projector does with a `@v0` receipt
+
+`@v0` remains conformant, so a projector must not report such a receipt as
+invalid. But conformance is not a licence: a `bound` issued under a contract
+that never required a trust basis grounds nothing, so the projection **mints
+no `prov:Agent` and asserts no attribution** from it, emits
+`wrt:claimedSigner` instead, and declares **`L-UNGROUNDED`** so a consumer
+can tell that case apart from an ordinary unbound signature. Under `@v1` the
+state cannot arise at all.
 
 ## Open questions
 

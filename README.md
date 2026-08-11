@@ -42,7 +42,8 @@ Sealed Ecosystem Bundle  (ecosystem.snapshot@v0)
 ```bash
 python3 model/snapshot_model.py   # exit status is the verdict
 python3 model/sev_projector.py    # end-to-end projection, cross-process determinism
-python3 conformance/replay.py     # language-neutral fixture replay
+python3 conformance/replay.py     # language-neutral fixtures: parse-strict, actor-iri,
+                                  # judgement-identity, signature-promotion
 python3 model/warrant_adapter.py --selftest        # adapter vectors
 python3 model/warrant_adapter.py ~/path/.warrants  # project a real store
 ```
@@ -72,8 +73,9 @@ own clean round:
 | Artifact | Scope | Status |
 |---|---|---|
 | `ecosystem.snapshot@v0` **byte core** | logical-path and prefix rules, subroot descriptor + domain-separated digest, snapshot object with its normative array orders and self-hash, `parse_strict`'s complete refusal set | **FROZEN** at `7935400` — clean §7 gate, Kimi round 7 re-gate, zero P1 |
-| `warrant.verification-receipt@v0` core | receipt core invariants, envelope/body binding, counts, source union, and acknowledged invalid evidence | **FROZEN** at `1fb82d6` — exact-SHA gate of `4e09d7d`, merged unchanged through PR #2; zero P1 |
+| `warrant.verification-receipt@v0` core | receipt core invariants, envelope/body binding, counts, source union, and acknowledged invalid evidence | **FROZEN** at `1fb82d6` — exact-SHA gate of `4e09d7d`, merged unchanged through PR #2; zero P1. **This freeze is permanent, and the frozen SHA does not move.** A successor contract, `warrant.verification-receipt@v1`, is proposed in [`proposals/WARRANT-VERIFICATION-RECEIPT.md`](proposals/WARRANT-VERIFICATION-RECEIPT.md): it requires a signature's `binding` to match its trust basis. It ships on its **own wire tag** rather than as an amendment, because the same canonical bytes under one tag must never get two verdicts. Ratifying `@v1` freezes a new contract beside this one |
 | MVP projector | what `model/sev_projector.py` actually emits, per `mvp_predicates` in the shapes file | **not frozen** |
+| `warrant.verification-receipt@v1` | the `@v0` surface plus A-1: a signature's `binding` must match its trust basis (`BINDING_WITHOUT_TRUST`, `UNVERIFIED_UNDER_TRUST`) | **PROPOSED — not frozen.** A separate wire tag, dispatched on; `@v0` is untouched |
 | Full `sev@v0` target profile | every class and predicate in `conformance/prov-shapes.json`, including the OAIP/BOS quadrants | **not frozen**, and expected to move longest |
 
 > **What the snapshot freeze does and does not say.** It covers exactly the
