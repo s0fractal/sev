@@ -1,3 +1,39 @@
+> # NOT YET USEFUL
+>
+> **Closed as an external artifact. Do not show this to anyone outside the
+> ecosystem, and do not treat its green runs as evidence.** An independent
+> gate found that the controls did not survive, and the stopping rule is
+> applied literally: no third repair pass.
+>
+> The four findings, each reproduced:
+>
+> 1. **The `$6400` countervector runs `$640`.** `build_store()` hard-codes
+>    `amount_usd: 640`, and the control passes it no amount. The PASS line
+>    names a test that never executed — the exact shape of defect the control
+>    existed to prevent.
+> 2. **The main detector is undefended.** Replacing
+>    `healthy = report["ok"] and prc == 0 and excluded == 0 and bound` with
+>    `healthy = report["ok"]` still prints **six PASS and exits 0**. The
+>    digest binding and the exclusion check — the whole round-2 repair — can
+>    be deleted without the suite noticing.
+> 3. **"Full JSON Schema" is not full.** `jsonschema.validate()` is called
+>    with no `FormatChecker`, so `created_at: "not-a-date"` validates despite
+>    the schema declaring `format: date-time`.
+> 4. **The authorization claim regrew.** The closing paragraph below said the
+>    record shows a decision was *permitted* and *allowed* — the precise
+>    claim the previous pass removed from the top of this file, reappearing
+>    at the bottom of the same file.
+>
+> `--countervectors` now exits **non-zero** and prints this closure. That is
+> not a repair: it stops a false green from being quotable. Everything else
+> is left exactly as the gate found it.
+>
+> **What is worth keeping** is the mechanism, not the demo: content-addressed
+> tamper detection works, and the `--negative` path genuinely flips. What
+> failed is this *packaging* of it — a headline, a set of controls and an
+> actual proof that kept drifting apart. A useful external artifact should
+> not need policy semantics, a BOS graph and two verifier runs at once.
+
 # Can you prove what your AI agent was allowed to do?
 
 In 2024 an airline's chatbot told a grieving passenger he could claim a

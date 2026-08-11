@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""One vertical slice: an agent's refund decision, provable offline.
+"""One vertical slice: an agent's refund decision — CLOSED, NOT YET USEFUL.
+
+**An independent gate found the controls did not survive; see README.md.**
+The `$6400` countervector runs `$640`; the main detector can be deleted with
+all six controls still passing; the "full schema" check omits format
+validation; and the authorization claim regrew in the README. No third
+repair pass was made — the stopping rule is applied literally.
+
+`--countervectors` exits non-zero for that reason. The mechanism below
+(content-addressed tamper detection, and the `--negative` flip) does work.
 
     python3 examples/refund-decision/run.py            # the whole path
     python3 examples/refund-decision/run.py --negative # tamper, then re-run
@@ -366,7 +375,16 @@ def main(argv):
     for line in sibling_versions():
         print(line)
     if args.countervectors:
-        return 0 if countervectors() else 1
+        ok = countervectors()
+        print("\n" + "!" * 68)
+        print("NOT YET USEFUL — these controls did NOT survive an independent")
+        print("gate. The $6400 vector runs $640; deleting the main detector")
+        print("leaves all six PASS; the schema check omits FormatChecker.")
+        print("A green line here means nothing. See README.md.")
+        print("!" * 68)
+        # deliberately non-zero even when every check prints PASS: a false
+        # green that can be quoted is worse than a red that cannot
+        return 1
 
     tmp = tempfile.mkdtemp(prefix="refund-slice-")
     try:
