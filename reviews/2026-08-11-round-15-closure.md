@@ -180,4 +180,3 @@ wrong is indistinguishable, in the file, from a fact.
 
 98 model + 274 projector + 11 fixtures + 29 adapter, all green. Live store
 unchanged: 81 sources, 1081 quads, 0 errors / 16 warnings.
-
