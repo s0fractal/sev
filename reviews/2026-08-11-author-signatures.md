@@ -100,3 +100,100 @@ honest. Live store: 81 sources, 1177 quads, 0 errors / 16 warnings.
 **Still not emitted, still declared:** settlement (`L-NOSETTLE`), promotion
 (`L-NOPROMOTE`), issues on projected sources (`L-NOISSUE`), malformed
 signature occurrences (`L-NOSIGNODE`).
+
+---
+
+# Round 17 closure — Codex, target `5315f6a` (PR #6), verdict AMEND
+
+**3 P1 + 1 P2 + a stack blocker.** All reproduced before any change. Base
+updated rather than merged: landing #5 is a governance act, and the reviewer
+offered "land or rebase" — rebasing keeps that decision where it belongs.
+
+## Stack blocker — rebased onto `9a3df58`
+
+Two conflicts, both resolved toward the base: the signatures branch predated
+the round-15/16 coverage work and would have re-introduced the defect that
+round closed. The rebase also surfaced a **duplicate**
+`declared − emitted = ∅` check — one from each branch — and the base's copy
+was the weaker: it took its union over `res_body` alone, so
+`prov:wasAttributedTo`, emitted only on the promotion path, read as an
+over-declaration. The stronger version survives.
+
+## P1-1 — receipt judgements leaked into the default graph
+
+Confirmed. `sigValid`, `binding`, `claimedSigner`, the agent node and the
+attribution were all emitted without `vgraph`. Two honest receipts over the
+same signature — one `unverified`, one `bound` — union into a single node
+carrying **both bindings**, with nothing to say which `receipt_core_digest`
+asserted which.
+
+**The profile already required this** (§5: the verification graph holds
+"signature validity/binding"). The implementation was in breach of it, not
+ahead of it.
+
+**Disposition.** Mechanical topology — type, multiplicity, the
+record→signature edge, all derivable from the sealed bytes and identical
+under every receipt — stays in the default graph. Every receipt-derived
+assertion moved to `urn:sev:g:verify:<core_digest>`. The two-receipt union
+vector now shows two binding statements on one node in two graphs, while the
+type statement collapses to a single shared line.
+
+**A second defect in my own fix, found by mutation.** The first guard watched
+`wrt:binding` only — so `sigValid`, the agent node and the attribution
+leaked past it. Checking one predicate covers one predicate. The guard now
+enumerates every receipt-derived term and states the rule once over all of
+them; four separate leak mutations each fail.
+
+## P1-2 — excluded signatures counted as emitted
+
+Confirmed on a clean `ID_UNSOUND` receipt: one signature entry, zero
+signature nodes, no `L-NOSIGNODE`, `signature` absent from `not_emitted`, and
+an `L-UNBOUND` describing a `wrt:claimedSigner` **that exists nowhere in the
+graph**.
+
+**Disposition.** Both are counted from nodes the projection actually emitted
+(`emitted_sig_occurrences`, `unattributed_nodes`) rather than from receipt
+entries. `L-UNBOUND` is scoped to signature nodes that exist — a loss
+describing an absent node is a caveat on an absent fact, which is the thing
+this manifest exists to prevent.
+
+## P1-3 — code and profile minted different IRIs
+
+Confirmed: `urn:wrt:signature:<opaque sha256>` and `urn:sev:agent:<sha256>`
+against the profile's `urn:wrt:sig:<sig_digest>:<multiplicity>` and
+`urn:wrt:actor:<pct-encoded>`.
+
+**Resolved as recommended — the contract is amended where the code's
+instinct was right, and the code yields everywhere else.**
+
+- **Signature:** `urn:wrt:sig:<WID>:<sig_digest>:<multiplicity>`. The WID is
+  now normative, because the same *invalid* `{actor,key,sig}` can be replayed
+  into several records; without it two records share one node and each
+  receipt's judgement overwrites the other's. Vectored.
+- **Components stay visible.** Hashing the triple into one digest destroyed
+  the join a consumer needs on `sig_digest`. A vector asserts the IRI
+  component by component and that `sig_digest` survives as a substring.
+- **Actor:** the code now mints `urn:wrt:actor:<pct-encoded>` per the
+  profile. Encoding pinned to UTF-8 bytes with an **empty safe set** — the
+  default safe set of most URL encoders is library-dependent at exactly the
+  characters an actor id carries. A Cyrillic actor id with `/` and `@` is
+  vectored against the exact expected octets.
+
+## P2 — contradictory loss taxonomy
+
+Confirmed: `L-SIG` appeared in both families and `L-UNBOUND` sat among the
+absence codes while the projector appends both to `qualified`. `L-SIG` and
+`L-UNBOUND` are now qualifying codes; `L-NOSIGNODE` alone is the absence,
+and its text was widened to name both ways a node can be missing.
+
+## Mutation results
+
+16 mutations of the changed detectors; 15 fail. The one that does not
+neuters an assertion into a tautology, which cannot fail without a defect
+present — the honest form of that test is the four leak mutations, which all
+fail.
+
+## State
+
+108 model + 300 projector + 11 fixtures + 29 adapter, all green. Live store:
+81 sources, 1177 quads, 0 errors / 16 warnings.

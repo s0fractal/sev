@@ -65,3 +65,5 @@ round without a SHA is invalid.
 | 16 | 2026-08-11 | Codex | AMEND — 1 P1: `wrt:claimedActor` emitted as a literal where the profile declared an IRI; 1 P2: ledger misattributed round 15 | `c701d91` (PR #5 head) |
 | 16-fix | 2026-08-11 | Claude (author) | closure of round 16: profile corrected (literal weak default, actor IRI only on promotion); attribution corrected; `urn:sev:agent` divergence in #6 flagged not fixed | `c701d91` → `author/body-mapping` |
 | — | 2026-08-11 | **Claude (author)** | **NOT A GATE** — §4.1 signatures: `L-NOSIG` → `L-SIG`/`L-UNBOUND`/`L-NOSIGNODE`; MVP declaration made honest in both directions | `9a3df58` → `author/signatures` (stacked on PR #5) |
+| 17 | 2026-08-11 | Codex | AMEND — 3 P1: receipt judgements in the default graph; excluded signatures counted as emitted; minted IRIs violated the profile | `5315f6a` (PR #6 head) |
+| 17-fix | 2026-08-11 | Claude (author) | closure of round 17: rebased onto `9a3df58`; judgements scoped to the verification graph; counts derived from emitted nodes; signature/actor IRI contracts unified (profile amended to require the WID) | `5315f6a` → `author/signatures` |

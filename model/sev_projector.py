@@ -20,6 +20,7 @@ Stdlib only. Run:  python3 sev_projector.py   (self-vectors; exit = verdict)
 """
 
 import json
+import urllib.parse
 import os
 import re
 import subprocess
@@ -143,26 +144,38 @@ def iri_usage(filing, role, target):
 
 
 def iri_signature(wid, sig_digest, multiplicity):
-    """One node per signature OCCURRENCE on one record.
+    """`urn:wrt:sig:<WID>:<sig_digest>:<multiplicity>` — profile §2.
 
-    `multiplicity` is in the key because a record may carry the same
-    signature bytes twice; the receipt reports that as one entry with a
-    count, and collapsing the occurrences would let two facts share a node
-    whose properties are then asserted once.
+    Every component stays **visible** rather than hashed into one opaque
+    digest: `sig_digest` is what a consumer joins on, and an implementation
+    that hashes the triple together makes the join impossible and its
+    N-Quads non-comparable with anyone else's.
+
+    `multiplicity` is present because a record may carry the same signature
+    bytes twice. `WID` is present because the same *invalid* `{actor, key,
+    sig}` can be replayed into several records — without it, two records
+    sharing a bad signature would share one node, and each record's
+    judgement of it would overwrite the other's (round 17 P1; the profile
+    was amended to require the WID rather than the code bent to match it).
     """
-    return "urn:wrt:signature:" + sm.sha256_hex(
-        wid.encode("ascii") + b"\x00" + sig_digest.encode("ascii")
-        + b"\x00" + str(multiplicity).encode("ascii"))
+    return "urn:wrt:sig:%s:%s:%d" % (wid, sig_digest, multiplicity)
 
 
-def iri_agent(actor_id):
-    """An agent node exists ONLY where a signature was valid AND bound.
+def iri_actor(actor_id):
+    """`urn:wrt:actor:<pct-encoded actor string>` — profile §2.
 
-    Minting it from the actor string is safe precisely because it is minted
-    nowhere else: an unbound signature never reaches this function, so the
-    graph cannot contain an agent that no binding vouched for.
+    Minted ONLY where a signature was valid AND bound, which is what makes
+    minting it from the actor string safe: an unbound signature never
+    reaches this function, so the graph cannot contain an actor IRI that no
+    binding vouched for.
+
+    Percent-encoding is over the UTF-8 bytes with an explicit safe set, so
+    two implementations agree byte-for-byte on a non-ASCII actor id — the
+    default safe set of most URL encoders is locale- and library-dependent
+    at exactly the characters an actor id is likely to contain.
     """
-    return "urn:sev:agent:" + sm.sha256_hex(actor_id.encode("utf-8"))
+    return "urn:wrt:actor:" + urllib.parse.quote(
+        actor_id, safe="", encoding="utf-8", errors="strict")
 
 
 def iri_reason(wid, ptr, reason_digest):
@@ -268,6 +281,12 @@ def _project_validated(view, cas) -> tuple:
     # what the committed bodies HELD, and what of it reached the graph;
     # `not_emitted` is their difference, never a proxy for it
     body_present, body_mapped = set(), set()
+    # signature occurrences that actually became nodes, and the actors
+    # those nodes named as unattributed claims. Counting receipt ENTRIES
+    # instead let an excluded record's signature be reported as emitted
+    # (round 17 P1)
+    emitted_sig_occurrences = 0
+    unattributed_nodes = 0
 
     # verification graph: the receipt itself, mechanically produced
     rnode = iri_receipt(core_digest)
@@ -423,24 +442,33 @@ def _project_validated(view, cas) -> tuple:
         for sig in src.get("signatures") or []:
             node = iri_signature(wid, sig["sig_digest"], sig["multiplicity"])
             emitted_kinds.add("signature")
+            emitted_sig_occurrences += 1
+            # Mechanical topology — derivable from the sealed bytes alone,
+            # identical under every receipt — stays in the default graph.
             g.add(node, RDF_TYPE, _iri(WRT + "Signature"))
-            g.add(node, WRT + "sigValid", _lit(sig["valid"]))
-            g.add(node, WRT + "binding", _lit(sig["binding"]))
             g.add(node, SEV + "multiplicity", _lit(sig["multiplicity"]))
             g.add(rec, WRT + "hasSignature", _iri(node))
+            # Everything below is this RECEIPT's judgement and belongs in its
+            # verification graph. Unscoped, two honest receipts over the same
+            # signature — one reporting `unverified`, one `bound` — merged
+            # into a single node carrying both bindings, with nothing left to
+            # say which core digest asserted which (round 17 P1).
+            g.add(node, WRT + "sigValid", _lit(sig["valid"]), vgraph)
+            g.add(node, WRT + "binding", _lit(sig["binding"]), vgraph)
             actor_id = sig.get("actor")
             if not isinstance(actor_id, str):
                 continue
             if sig["valid"] is True and sig["binding"] == "bound":
-                agent = iri_agent(actor_id)
-                g.add(agent, RDF_TYPE, _iri(PROV + "Agent"))
-                g.add(agent, WRT + "actorId", _lit(actor_id))
+                agent = iri_actor(actor_id)
+                g.add(agent, RDF_TYPE, _iri(PROV + "Agent"), vgraph)
+                g.add(agent, WRT + "actorId", _lit(actor_id), vgraph)
                 # the SIGNATURE is what the agent made. Attributing the
                 # record itself would claim authorship of everything the
                 # body says, which one bound signature does not establish
-                g.add(node, PROV + "wasAttributedTo", _iri(agent))
+                g.add(node, PROV + "wasAttributedTo", _iri(agent), vgraph)
             else:
-                g.add(node, WRT + "claimedSigner", _lit(actor_id))
+                unattributed_nodes += 1
+                g.add(node, WRT + "claimedSigner", _lit(actor_id), vgraph)
 
         for reason in src["reasons"]:
             o = reason["outcome"]
@@ -547,15 +575,19 @@ def _project_validated(view, cas) -> tuple:
     # graph either. That is a real absence and keeps its own code; the rest
     # of the family is now emitted, so the old blanket code is gone rather than
     # standing as a caveat on facts that are present.
-    reported_sigs = sum(len(s.get("signatures") or []) for s in core["sources"]
-                        if s.get("kind") == "record")
+    # Measured against nodes that EXIST, not entries the receipt happens to
+    # carry. Counting entries meant an excluded record's signature — never
+    # projected, no node anywhere — was reported as emitted: no L-NOSIGNODE,
+    # `signature` missing from not_emitted, and an L-UNBOUND claiming a
+    # `wrt:claimedSigner` that appears nowhere in the graph (round 17 P1).
     total_sig_occurrences = sum(e.get("signature_occurrences", 0)
                                 for e in evidence.values())
     absent = []
-    if total_sig_occurrences > reported_sigs:
-        absent.append(loss("L-NOSIGNODE", "some signature occurrences are "
-                                          "malformed and carried as issues; "
-                                          "they get no signature node"))
+    if total_sig_occurrences > emitted_sig_occurrences:
+        absent.append(loss("L-NOSIGNODE", "%d signature occurrence(s) got no node "
+                                          "— malformed, or belonging to a record "
+                                          "this projection excluded"
+                           % (total_sig_occurrences - emitted_sig_occurrences)))
     if has_settlement:
         absent.append(loss("L-NOSETTLE", "the receipt carries jurisdiction-scoped "
                                          "settlement; this MVP emits NO settlement "
@@ -602,14 +634,16 @@ def _project_validated(view, cas) -> tuple:
                                        "cryptography and re-derives neither"))
     # Withheld attribution is a fact about the graph a consumer must be told,
     # or `wrt:claimedSigner` reads as an oversight instead of a refusal.
-    unattributed = [s for src in core["sources"]
-                    for s in (src.get("signatures") or [])
-                    if not (s.get("valid") is True and s.get("binding") == "bound")]
-    if unattributed:
-        qualified.append(loss("L-UNBOUND", "%d signature(s) are not both valid and "
-                                           "bound, so no agent is attributed; they "
-                                           "carry wrt:claimedSigner instead"
-                              % len(unattributed)))
+    # Scoped to signature NODES that exist. Derived from the receipt's
+    # entries it counted signatures on excluded records and then described
+    # them as carrying `wrt:claimedSigner` — a statement about a node the
+    # graph does not contain (round 17 P1).
+    if unattributed_nodes:
+        qualified.append(loss("L-UNBOUND", "%d projected signature(s) are not both "
+                                           "valid and bound, so no agent is "
+                                           "attributed; they carry "
+                                           "wrt:claimedSigner instead"
+                              % unattributed_nodes))
     if has_sigs or has_settlement:
         qualified.append(loss("L-SETTLE", "grade is emitted on the receipt node but "
                                           "is not re-derivable from the graph"))
@@ -629,9 +663,9 @@ def _project_validated(view, cas) -> tuple:
     loss_manifest = {"loss_manifest": "sev@v0", "entries": absent + qualified}
 
     not_emitted = set()
-    if total_sig_occurrences > reported_sigs:
+    if total_sig_occurrences > emitted_sig_occurrences:
         not_emitted.add("signature")
-    if unattributed:
+    if unattributed_nodes:
         not_emitted.add("attribution")
     if has_settlement:
         not_emitted.add("settlement")
@@ -814,9 +848,14 @@ def ski_fixture(extra_files=None, misfiled_as=None, body_extra=None,
         {"kind": "record", "path": rec_path, "entry_digest": by_path[rec_path],
          "loaded": True, "claimed_wid": filed_as, "computed_wid": wid,
          "id_sound": filed_as == wid, "settlement": [],
-         "signatures": [{"sig_digest": d, "multiplicity": m, "actor": a,
-                         "key": k, "valid": True, "binding": "unverified"}
-                        for d, m, a, k, _i in sm.envelope_signature_entries(record)[0]],
+         # sorted, as the contract requires: envelope order is not receipt
+         # order, and a second signature with a smaller digest made the
+         # fixture itself unrepresentable (SIGNATURES_NOT_SORTED)
+         "signatures": sorted(
+             [{"sig_digest": d, "multiplicity": m, "actor": a,
+               "key": k, "valid": True, "binding": "unverified"}
+              for d, m, a, k, _i in sm.envelope_signature_entries(record)[0]],
+             key=lambda x: (x["sig_digest"], x["multiplicity"])),
          "issues": sorted(
              ([] if filed_as == wid else
                 [{"code": "ID_UNSOUND", "severity": "ERR",
@@ -1504,7 +1543,7 @@ def run_vectors():
                   and actor.encode() in resL["nquads"])
     sm.check_true("...and the record points at its signature",
                   lambda: any("wrt#hasSignature" in ln
-                              and "urn:wrt:signature:" in ln
+                              and "urn:wrt:sig:" in ln
                               for ln in resL["nquads"].decode().splitlines()))
 
     # The same signature bytes twice is one entry per OCCURRENCE in the
@@ -1523,6 +1562,122 @@ def run_vectors():
                   lambda: len({ln.split('"')[1] for ln in
                                resD["nquads"].decode().splitlines()
                                if "sev#multiplicity" in ln}) == 2)
+
+    # The normative identity, component by component. Hashing the triple into
+    # one opaque digest destroyed the join a consumer needs on `sig_digest`
+    # and made these N-Quads incomparable with any other implementation's.
+    sig_iri = sorted({ln.split(" ")[0][1:-1]
+                      for ln in resL["nquads"].decode().splitlines()
+                      if "wrt#Signature" in ln})[0]
+    _wid_L = [s for s in receiptL["core"]["sources"]
+              if s.get("computed_wid")][0]["computed_wid"]
+    _sd_L = [s for s in receiptL["core"]["sources"]
+             if s.get("signatures")][0]["signatures"][0]["sig_digest"]
+    sm.check_equal("the signature IRI is the profile's, component by component",
+                   sig_iri, "urn:wrt:sig:%s:%s:0" % (_wid_L, _sd_L))
+    sm.check_true("...so sig_digest stays joinable as a substring",
+                  lambda: _sd_L in sig_iri and _wid_L in sig_iri)
+
+    # The WID is in that identity because the same INVALID {actor,key,sig}
+    # can be replayed into several records. Without it the two records share
+    # one node and each receipt's judgement of it overwrites the other's.
+    replay = {"actor": "signer@example", "key": "c" * 64, "sig": "d" * 128}
+    snapR1, receiptR1, casR1 = ski_fixture(body_extra={"ts": 1},
+                                           sigs_extra=[replay])
+    snapR2, receiptR2, casR2 = ski_fixture(body_extra={"ts": 2},
+                                           sigs_extra=[replay])
+    resR1, _ = _project_objects(snapR1, receiptR1, casR1)
+    resR2, _ = _project_objects(snapR2, receiptR2, casR2)
+    nodes1 = {ln.split(" ")[0][1:-1] for ln in resR1["nquads"].decode().splitlines()
+              if "wrt#Signature" in ln}
+    nodes2 = {ln.split(" ")[0][1:-1] for ln in resR2["nquads"].decode().splitlines()
+              if "wrt#Signature" in ln}
+    sm.check_equal("the same signature in two records shares no node",
+                   sorted(nodes1 & nodes2), [])
+
+    # An EXCLUDED record's signature never becomes a node. Counting the
+    # receipt's entries instead of emitted nodes reported it as projected:
+    # no L-NOSIGNODE, `signature` absent from not_emitted, and an L-UNBOUND
+    # describing a `wrt:claimedSigner` that exists nowhere (round 17 P1).
+    snapX2, receiptX2, casX2 = ski_fixture(misfiled_as="9" * 64)
+    resX2, fX2 = _project_objects(snapX2, receiptX2, casX2)
+    entriesX2 = sum(len(s.get("signatures") or [])
+                    for s in receiptX2["core"]["sources"])
+    quadsX2 = resX2["nquads"].decode()
+    codesX2 = [e["code"] for e in resX2["loss_manifest"]["entries"]]
+    sm.check_equal("an id-unsound record projects, excluded", fX2, [])
+    sm.check_true("...its signature entry exists but its node does not",
+                  lambda: entriesX2 >= 1 and "wrt#Signature" not in quadsX2)
+    sm.check_true("...so the absence is declared, not implied",
+                  lambda: "L-NOSIGNODE" in codesX2
+                  and "signature" in
+                  resX2["view_manifest"]["coverage"]["not_emitted"])
+    sm.check_true("...and no loss describes a node the graph lacks",
+                  lambda: "L-UNBOUND" not in codesX2
+                  and "attribution" not in
+                  resX2["view_manifest"]["coverage"]["not_emitted"])
+
+    # A non-ASCII actor id must percent-encode identically everywhere, or two
+    # honest implementations disagree on the IRI and the join silently fails.
+    uactor = "Оксана/Ко@варрант"
+    snapU3, receiptU3, casU3 = ski_fixture(
+        body_extra={"actor": {"id": uactor}},
+        sigs_extra=[{"actor": uactor, "key": "e" * 64, "sig": "f" * 128}])
+    srcU3 = [s for s in receiptU3["core"]["sources"] if s.get("signatures")][0]
+    for sg in srcU3["signatures"]:
+        # the actor comes from the ENVELOPE; only the binding is the
+        # receipt's to report, so only it is set here
+        if sg["actor"] == uactor:
+            sg["binding"] = "bound"
+    resU3, fU3 = _project_objects(snapU3, receiptU3, casU3)
+    sm.check_equal("a unicode actor projects", fU3, [])
+    # THE round-17 vector. Two honest receipts over the same bytes, one
+    # reporting `unverified` and one `bound`. Unscoped, their union gave a
+    # single node both bindings with nothing left to say which core digest
+    # asserted which. Scoped, each judgement sits in its own verification
+    # graph and the union stays readable.
+    snapG, receiptG, casG = ski_fixture()
+    resG1, _ = _project_objects(snapG, receiptG, casG)
+    snapG2, receiptG2, casG2 = ski_fixture()
+    for sg in [s for s in receiptG2["core"]["sources"]
+               if s.get("signatures")][0]["signatures"]:
+        sg["binding"] = "bound"
+    resG2, _ = _project_objects(snapG2, receiptG2, casG2)
+    union = resG1["nquads"].decode().splitlines() + \
+        resG2["nquads"].decode().splitlines()
+    binding_lines = [ln for ln in union if "wrt#binding" in ln]
+    sm.check_equal("two receipts, two binding statements", len(binding_lines), 2)
+    sm.check_equal("...on the same signature node",
+                   len({ln.split(" ")[0] for ln in binding_lines}), 1)
+    sm.check_equal("...but in two different verification graphs",
+                   len({ln.rsplit("<", 1)[1] for ln in binding_lines}), 2)
+    sm.check_true("...each naming its own receipt core digest",
+                  lambda: all("urn:sev:g:verify:" in ln for ln in binding_lines))
+    # the type statement is derivable from the sealed bytes alone, so both
+    # projections emit it identically and it collapses to one line on union
+    sm.check_equal("...while the mechanical topology stays unscoped and shared",
+                   len({ln for ln in union if "wrt#Signature" in ln
+                        and "urn:sev:g:verify:" not in ln}), 1)
+
+    # Checking one predicate covered one predicate: `sigValid`, the agent
+    # node and the attribution all leaked past a guard that only watched
+    # `binding`. Every RECEIPT-DERIVED term is enumerated here, and the rule
+    # is stated once over all of them.
+    _RECEIPT_DERIVED = ("wrt#sigValid", "wrt#binding", "wrt#claimedSigner",
+                        "prov#wasAttributedTo", "prov#Agent", "wrt#actorId")
+
+    def _unscoped_receipt_terms(res):
+        return sorted({t for ln in res["nquads"].decode().splitlines()
+                       for t in _RECEIPT_DERIVED
+                       if t in ln and "urn:sev:g:verify:" not in ln})
+
+    for _label, _res in (("unbound fixture", resG1), ("bound fixture", resG2)):
+        sm.check_equal("no receipt judgement sits in the default graph (%s)"
+                       % _label, _unscoped_receipt_terms(_res), [])
+    sm.check_true("...to a fully percent-encoded actor IRI",
+                  lambda: "<urn:wrt:actor:%D0%9E%D0%BA%D1%81%D0%B0%D0%BD%D0%B0"
+                          "%2F%D0%9A%D0%BE%40%D0%B2%D0%B0%D1%80%D1%80%D0%B0"
+                          "%D0%BD%D1%82>" in resU3["nquads"].decode())
     sm.check_true("...while the actor the body commits to IS mapped, weakly",
                   lambda: b"wrt#claimedActor" in resL["nquads"])
 
@@ -3230,13 +3385,10 @@ def run_vectors():
     # fixture emits is over-declaration, the mirror of emitting an undeclared
     # one. The union is taken over fixtures chosen to reach every branch that
     # emits a PROV predicate, so "declared" cannot quietly outgrow "emitted".
-    _seen = set(_emitted_preds)
-    for _r in (res_body,):
-        _seen |= {ln.split(" ")[1][1:-1]
-                  for ln in _r["nquads"].decode().splitlines()
-                  if ln.split(" ")[1].startswith("<http://www.w3.org/ns/prov#")}
-    sm.check_equal("every declared MVP predicate is actually emitted somewhere",
-                   sorted(set(SHAPES["mvp_predicates"]) - _seen), [])
+    # (the both-directions half of this check lives further down, where the
+    # bound-signature fixture exists: `prov:wasAttributedTo` is declared and
+    # emitted only on the promotion path, so a union taken here would be
+    # missing it and would report an over-declaration that is not one)
 
     # PROV-O's own normative wasAssociatedWith example: the agent is typed
     # Person, Agent AND Entity. A guard that rejects every multi-kind node

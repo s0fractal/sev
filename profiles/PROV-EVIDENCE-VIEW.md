@@ -115,8 +115,8 @@ literal prose).
 | Warrant record | `urn:wrt:record:<WarrantID>` |
 | Warrant blob | `urn:wrt:blob:<sha256>` |
 | Filing activity | `urn:wrt:filing:<entry_digest>` — the digest of the envelope bytes in the snapshot (`sources[].entry_digest`), NOT the WarrantID: the WarrantID identifies the body, while the envelope grows under co-signatures; each sealed envelope occurrence is one filing |
-| Signature | `urn:wrt:sig:<sha256(JCS({actor,key,sig}))>:<multiplicity>` |
-| Actor | `urn:wrt:actor:<pct-encoded actor string>` — **minted only on the promotion path**. Before a `valid && bound` signature, the body's actor is a claim the record makes, not an identity the bundle can name; giving it an IRI would let two records that merely assert the same string be merged into one referent by any consumer, on the strength of nothing. The weak default is therefore a literal (rev 5) |
+| Signature (occurrence) | `urn:wrt:sig:<WarrantID>:<sha256(JCS({actor,key,sig}))>:<multiplicity>` — **rev 5 amends this to include the WarrantID.** The digest alone identified the signature BYTES, and the same *invalid* `{actor,key,sig}` can be replayed into several records: without the WID two records shared one node, and each receipt's judgement of it overwrote the other's. Every component stays visible rather than hashed together, so `sig_digest` remains joinable and two implementations emit byte-identical IRIs |
+| Actor | `urn:wrt:actor:<pct-encoded actor string>` — percent-encoding is over the **UTF-8 bytes with an empty safe set**, since the default safe set of most URL encoders is library-dependent at exactly the characters an actor id tends to carry — **minted only on the promotion path**. Before a `valid && bound` signature, the body's actor is a claim the record makes, not an identity the bundle can name; giving it an IRI would let two records that merely assert the same string be merged into one referent by any consumer, on the strength of nothing. The weak default is therefore a literal (rev 5) |
 | Σ-GLYPH node | `urn:sigma:node:<NodeHash>` |
 | Source occurrence | `urn:sev:source:<sha256(subroot_descriptor_digest ‖ 0x00 ‖ path ‖ 0x00 ‖ entry_digest)>` — `sourceKind` is contract-derived, so the occurrence is scoped to the descriptor that derived it |
 | Reason (stable fact of a record) | `urn:wrt:reason:<sha256(WID ‖ 0x00 ‖ JSON-pointer ‖ 0x00 ‖ reason_digest)>` — an Entity. Carries `sev:pointer`, `sigma:runtime`, `sigma:claimedVerdict`, `wrt:checkRef` (literal digest) and, when that blob is sealed in the same subroot, `wrt:checkBlob`. **Never `prov:used`** — that predicate's domain is an Activity |
@@ -430,6 +430,7 @@ Emitted alongside the graph as JCS-canonical JSON. Codes:
 | Code | Property the graph cannot express or verify |
 |---|---|
 | L-SIG | Signature validity/binding are receipt-reported; Ed25519 re-verification needs envelope bytes |
+| L-UNBOUND | Projected signatures that are not both `valid` and `bound` attribute no agent; they carry `wrt:claimedSigner`. Scoped to signature nodes that EXIST — a loss describing a node the graph lacks is a caveat on an absent fact |
 | L-SETTLE | Settlement closure/grade are not re-derivable from the graph; they need `warrant verify` over the snapshot with out-of-band trust |
 | L-KEYSTATE | Key rotation history is collapsed to per-signature `binding` at one DAG position |
 | L-THRESH | Quorum is receipt-asserted, not demonstrable by counting graph nodes (unbound claims must not count; the graph cannot enforce this) |
@@ -448,9 +449,7 @@ receipt or snapshot, so a manifest never claims a loss it does not have:
 
 | Code | Declares |
 |---|---|
-| L-NOSIGNODE | Some signature OCCURRENCES are malformed and carried as issues rather than entries; they get no signature node |
-| L-SIG | Signature validity and binding are **copied** from the receipt; SEV performs no cryptography and re-derives neither |
-| L-UNBOUND | Signatures that are not both `valid` and `bound` attribute no agent; they carry `wrt:claimedSigner` instead |
+| L-NOSIGNODE | Some signature occurrences get **no node**: malformed and carried as issues, or belonging to a record this projection excluded |
 | L-NOSETTLE | The receipt carries jurisdiction-scoped settlement and the projection emits no settlement nodes at all |
 | L-NOUNCLAIMED | The snapshot pins `unclaimed` members that are not projected |
 | L-NOISSUE | Projected sources carry issues in the receipt and no issue reaches the graph — an unqualified node is therefore not a clean one |
