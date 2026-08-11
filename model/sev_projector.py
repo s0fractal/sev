@@ -3685,31 +3685,46 @@ def run_vectors():
                           lambda fT=fT, expect=expect, resT=resT:
                           resT is None and any(x["code"] == expect for x in fT))
 
-    # The matrix is scoped to `valid: true`, as the round specified, and the
-    # boundary is asserted rather than left implicit: an INVALID signature
-    # reported `unbound` at base grade is still accepted. Whether it should
-    # be is an open question — Warrant without key state reports `unverified`
-    # for everything, so `unbound` may be unreachable there too regardless of
-    # validity — and it is forwarded rather than decided here, because
-    # widening a frozen invariant beyond what was reviewed is not mine to do.
-    snB, rcB, csB = fixture()
+    # The base rule covers EVERY signature, valid or not. Round 18 scoped it
+    # to `valid: true` and forwarded the question; round 19 answered it with
+    # a working bypass — an invalid CO-signature claiming `unbound` at base,
+    # on a record whose actor signature is valid, so the record projects and
+    # the graph asserts an ungrounded binding. Without key state Warrant does
+    # not know a key is unbound either; it knows only `unverified`.
+    snB, rcB, csB = ski_fixture(
+        sigs_extra=[{"actor": "co@example", "key": "a" * 64, "sig": "b" * 128}])
     srcB = [s for s in rcB["core"]["sources"] if s.get("signatures")][0]
     for sg in srcB["signatures"]:
-        sg["valid"], sg["binding"] = False, "unbound"
+        if sg["actor"] == "co@example":
+            sg["valid"], sg["binding"] = False, "unbound"
     srcB["issues"] = sorted(srcB["issues"] + [
         {"code": "INVALID_SIGNATURE", "severity": "WARN",
-         "at": {"kind": "json-pointer", "value": "/sigs/0"}},
-        {"code": "NO_VALID_ACTOR_SIGNATURE", "severity": "ERR",
-         "at": {"kind": "path", "value": srcB["path"]}}],
+         "at": {"kind": "json-pointer", "value": "/sigs/1"}}],
         key=lambda x: sm.jcs(x))
-    rcB["core"]["errors"] += 1
     rcB["core"]["warnings"] += 1
-    rcB["core"]["ok"] = False
     _resB2, fB2 = _project_objects(snB, rcB, csB)
-    sm.check_equal("the matrix is scoped to valid signatures, and says so",
-                   [x["code"] for x in fB2
-                    if x["code"] in ("BINDING_WITHOUT_TRUST",
-                                     "UNVERIFIED_UNDER_TRUST")], [])
+    sm.check_true("an invalid co-signature cannot claim a binding at base",
+                  lambda: _resB2 is None and any(
+                      x["code"] == "BINDING_WITHOUT_TRUST" for x in fB2))
+    # ...while the settlement side stays scoped to valid signatures: under a
+    # pinned trust config an invalid signature may legitimately have had no
+    # binding computed at all.
+    snB2, rcB2, csB2 = ski_fixture(
+        sigs_extra=[{"actor": "co@example", "key": "a" * 64, "sig": "b" * 128}],
+        settlement=True)
+    srcB3 = [s for s in rcB2["core"]["sources"] if s.get("signatures")][0]
+    for sg in srcB3["signatures"]:
+        sg["binding"] = "unverified" if sg["actor"] == "co@example" else "bound"
+        if sg["actor"] == "co@example":
+            sg["valid"] = False
+    srcB3["issues"] = sorted(srcB3["issues"] + [
+        {"code": "INVALID_SIGNATURE", "severity": "WARN",
+         "at": {"kind": "json-pointer", "value": "/sigs/1"}}],
+        key=lambda x: sm.jcs(x))
+    rcB2["core"]["warnings"] += 1
+    _resB4, fB4 = _project_objects(snB2, rcB2, csB2)
+    sm.check_equal("an invalid signature may be unevaluated under settlement",
+                   [x["code"] for x in fB4], [])
 
     # The MVP declaration must be exact in BOTH directions. The existing
     # check only caught emitting something undeclared; adding

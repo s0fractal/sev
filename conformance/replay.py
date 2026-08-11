@@ -32,10 +32,29 @@ def main():
                             "" if ok else "  (got %s, want %s)"
                             % (got, case["expected_codes"])))
         failed += 0 if ok else 1
+    # The actor IRI contract, replayed from data for the same reason: three
+    # rounds running, a defect was closed in Python while the normative
+    # document still described the superseded rule — and the document is
+    # what a second implementation reads.
+    import sev_projector as sp
+    with open(os.path.join(HERE, "actor-iri.vectors.json")) as fh:
+        actor_fx = json.load(fh)
+    if not actor_fx.get("cases"):
+        print("FAIL  empty actor-iri fixture set — vacuous")
+        return 1
+    for case in actor_fx["cases"]:
+        actor = base64.b64decode(case["actor_b64"]).decode("utf-8")
+        got = sp.iri_actor(actor)
+        ok = got == case["iri"]
+        print("%s  actor-iri: %s%s" % ("PASS" if ok else "FAIL", case["name"],
+                                       "" if ok else "  (got %s, want %s)"
+                                       % (got, case["iri"])))
+        failed += 0 if ok else 1
     if failed:
         print("FAILED: %d fixture(s)" % failed)
         return 1
-    print("ALL PASS (%d parse-strict fixtures)" % len(fixtures["cases"]))
+    print("ALL PASS (%d parse-strict + %d actor-iri fixtures)"
+          % (len(fixtures["cases"]), len(actor_fx["cases"])))
     return 0
 
 

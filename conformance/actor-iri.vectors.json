@@ -1,0 +1,48 @@
+{
+  "vectors": "sev.actor-iri@v0",
+  "note": "The actor IRI contract as DATA, not prose. Three rounds running, a defect was closed in Python and in Python-side vectors while the normative document still described the superseded rule -- and the document is what a second implementation reads. These cases are the rule: an implementation that reproduces every `iri` from its `actor` agrees with SEV on actor identity, without reading any Python. Inputs are base64 of the UTF-8 actor id, because a JSON string cannot carry a lone surrogate or an unpaired byte and the boundary cases are exactly where implementations diverge.",
+  "rule": "urn:wrt:actor: || pct(actor). pct retains the ASCII unreserved set A-Z a-z 0-9 - . _ ~ literally and encodes every other UTF-8 octet as %HH with UPPERCASE hex digits.",
+  "minted_only_when": "A signature reported valid:true AND binding:\"bound\". Before that the actor is a claim the record makes, not an identity the bundle can name, and the weak default `wrt:claimedActor` is a literal.",
+  "cases": [
+    {
+      "name": "unreserved ASCII is retained literally",
+      "actor_b64": "QVphejA5LS5ffg==",
+      "iri": "urn:wrt:actor:AZaz09-._~"
+    },
+    {
+      "name": "JavaScript's extra safe set is NOT retained",
+      "actor_b64": "ISonKCk=",
+      "iri": "urn:wrt:actor:%21%2A%27%28%29"
+    },
+    {
+      "name": "the delimiters an actor id actually carries are encoded",
+      "actor_b64": "L0AlOisg",
+      "iri": "urn:wrt:actor:%2F%40%25%3A%2B%20"
+    },
+    {
+      "name": "hex is uppercase, which RFC 3986 leaves optional",
+      "actor_b64": "Dw==",
+      "iri": "urn:wrt:actor:%0F"
+    },
+    {
+      "name": "encoding is over UTF-8 octets, not code points",
+      "actor_b64": "w6k=",
+      "iri": "urn:wrt:actor:%C3%A9"
+    },
+    {
+      "name": "a realistic non-ASCII actor id",
+      "actor_b64": "0J7QutGB0LDQvdCwL9Ca0L5A0LLQsNGA0YDQsNC90YI=",
+      "iri": "urn:wrt:actor:%D0%9E%D0%BA%D1%81%D0%B0%D0%BD%D0%B0%2F%D0%9A%D0%BE%40%D0%B2%D0%B0%D1%80%D1%80%D0%B0%D0%BD%D1%82"
+    },
+    {
+      "name": "an empty actor id encodes to an empty suffix",
+      "actor_b64": "",
+      "iri": "urn:wrt:actor:"
+    },
+    {
+      "name": "an actor id that is already percent-looking is re-encoded",
+      "actor_b64": "JTQx",
+      "iri": "urn:wrt:actor:%2541"
+    }
+  ]
+}
