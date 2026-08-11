@@ -42,7 +42,8 @@ Sealed Ecosystem Bundle  (ecosystem.snapshot@v0)
 ```bash
 python3 model/snapshot_model.py   # exit status is the verdict
 python3 model/sev_projector.py    # end-to-end projection, cross-process determinism
-python3 conformance/replay.py     # language-neutral fixture replay (parse-strict + actor-iri)
+python3 conformance/replay.py     # language-neutral fixtures: parse-strict, actor-iri,
+                                  # judgement-identity, signature-promotion
 python3 model/warrant_adapter.py --selftest        # adapter vectors
 python3 model/warrant_adapter.py ~/path/.warrants  # project a real store
 ```

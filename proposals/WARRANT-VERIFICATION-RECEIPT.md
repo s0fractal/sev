@@ -81,7 +81,16 @@ the model, with a refusal vector for the null case.
 
 `core` is byte-reproducible across implementations *relative to* (snapshot,
 trust, grade, declared execution policy); `receipt_core_digest =
-sha256(JCS(core))` is the citable identity. `producer` is host-local and
+sha256(JCS(core))` is its **content** identity.
+
+**It is not, by itself, the identity of a judgement.** Once more than one
+contract can judge one core — `@v0` and `@v1` below — the same core bytes
+carry two different verdicts, so anything that cites a judgement must cite
+the contract with it:
+`judgement_digest = sha256(JCS({"receipt": <wire tag>, "core": <core>}))`.
+A consumer keying provenance on the content digest alone collapses the two,
+which is precisely the fork the tag split exists to prevent. The formula and
+its consequences are data, in `conformance/judgement-identity.vectors.json`. `producer` is host-local and
 carries no cross-implementation agreement.
 
 ## The receipt object (sketch, rev 3)
