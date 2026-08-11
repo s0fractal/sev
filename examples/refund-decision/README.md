@@ -5,9 +5,15 @@ bereavement discount after booking. He couldn't — the real policy said
 before. He sued, and won. The airline argued the bot was "a separate legal
 entity responsible for its own actions." The tribunal disagreed.
 
-Your logs can show **what the agent said**. This shows **what it was allowed
-to say** — and lets someone who does not trust you check it, offline, months
-later, on their own machine.
+Your logs can show **what the agent said**. This shows **which policy bytes
+the decision named, and whether they are still those bytes** — checkable by
+someone who does not trust you, offline, months later, on their own machine.
+
+**That is integrity, not authorization.** Nothing here reads the policy prose
+or checks the claim against it. A $6400 claim under an $800 ceiling passes
+this demo exactly as a $640 one does, and a permanent countervector asserts
+that it does — because the moment this example implies it validated the
+*decision*, it is lying about what it proved.
 
 ## Run it
 
@@ -32,7 +38,7 @@ Then four things happen, each done by the component that owns it:
 | **Judgement** | Warrant's own verifier | `warrant.verify-report@v0` — machine-readable, produced by running the verifier, not written by hand |
 | **Composition** | SEV | an evidence view over that judgement, shipped with an explicit list of what the view *cannot* express |
 | **Attribution** | BOS atoms | two actors assessing the **same** decision through different lenses |
-| **Action** | this script | a concrete next step, and the reason traces back to the bytes |
+| **Action** | this script | a bounded next step — *eligible for policy evaluation*, never *approved* |
 
 ## The part that matters
 
@@ -47,7 +53,7 @@ Nothing about the decision changed. But:
   carrying the reason;
 - the "opportunity" assessment is **withheld**, because its stated premise —
   *"the record verifies offline"* — is now false;
-- the action flips from *keep auto-approving* to *stop; route to a human*.
+- the action flips from *eligible for policy evaluation* to *stop; route to a human*.
 
 The tamper is detected by content addressing, not by a policy engine, and it
 is detected by someone who was not there when the decision was made.
@@ -73,6 +79,20 @@ still the content of the store or it is not. Determinism here is within a
 run, not across runs — a demo with hard-coded hashes would be a demo of a
 recording.
 
+## Run the controls
+
+```bash
+python3 examples/refund-decision/run.py --countervectors
+```
+
+Six checks, each one a way an earlier version of this demo said more than it
+could support: the $6400 claim still verifying; the demo's **output** never
+claiming authorization; a tamper landing *between* the two verifier runs
+breaking the digest binding; SEV excluding the affected sources; the
+generated atoms passing BOS's full JSON Schema; and an atom with a missing
+required field being **rejected**, so the schema check cannot be a false
+green.
+
 ## What this does not do
 
 - **It is not proof that a verifier ran.** The record is signed; the
@@ -82,8 +102,12 @@ recording.
   reports `binding unverified` — the signature is valid, but nothing here
   proves the key belongs to that actor. Both runs show it, and the demo does
   not paper over it.
-- **The BOS check is a subset.** Atoms are checked against BOS's own schema
-  file for required keys, not by BOS's full graph validator.
+- **It does not evaluate the policy.** See above; this is the whole reason
+  the action stops at *eligible for policy evaluation*.
+- **The BOS atoms validate, but the graph is not materialized.** They pass
+  BOS's full JSON Schema (`jsonschema` required; the check says so honestly
+  when it is absent). The actors, evidence and context-cut they reference are
+  not committed atoms, so BOS's own graph validator would still object.
 - **Nothing here is adopted.** All three repositories are research. This
   example composes their public contracts; it does not register or freeze
   anything.

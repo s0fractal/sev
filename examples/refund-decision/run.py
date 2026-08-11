@@ -133,14 +133,31 @@ def warrant_report(store):
     return json.loads(p.stdout), p.returncode
 
 
-def sev_projection(store):
-    """SEV composing that judgement into an evidence view."""
+def sev_projection(store, out_dir):
+    """SEV composing that judgement into an evidence view.
+
+    The adapter runs Warrant a SECOND time, over the live store. That is a
+    second observation, and round 1 never bound it to the first: a tamper
+    landing between the two showed `ok=true` while SEV excluded both records,
+    and the demo still said "keep auto-approving". So the receipt is written
+    out and its `producer.report_digest` — the digest of the report SEV
+    actually judged — is returned for comparison against the one printed.
+    """
     adapter = os.path.join(SEV, "model", "warrant_adapter.py")
-    p = run([sys.executable, adapter, store], check=False)
-    return p.stdout, p.returncode
+    p = run([sys.executable, adapter, store, "--out", out_dir], check=False)
+    digest, excluded = None, None
+    rec = os.path.join(out_dir, "receipt.json")
+    vm = os.path.join(out_dir, "view-manifest.json")
+    if os.path.isfile(rec):
+        with open(rec) as fh:
+            digest = json.load(fh)["producer"]["report_digest"]
+    if os.path.isfile(vm):
+        with open(vm) as fh:
+            excluded = json.load(fh)["sources_excluded"]
+    return p.stdout, p.returncode, digest, excluded
 
 
-def bos_atoms(subject_wid, policy_hash, report):
+def bos_atoms(subject_wid, policy_hash, report, report_digest):
     """Two actors, one subject, two legitimate lenses.
 
     BOS is not being made a source of truth for meaning here. `risk` and
@@ -150,8 +167,11 @@ def bos_atoms(subject_wid, policy_hash, report):
     """
     common = {
         "schema": "bos.atom@v0.4", "kind": "assessment",
+        "states": {"governance": "bos:status:governance:proposed",
+                   "maturity": "bos:status:maturity:research",
+                   "priority": "bos:status:priority:now"},
         "created_at": "2026-08-11T00:00:00Z",
-        "scope": ["ecosystem", "refund-agent"],
+        "scope": ["ecosystem", "warrant"],
         "disclosure": {"classification": "public", "payload_mode": "embedded",
                        "retention": "indefinite"},
         "relations": [{"predicate": "derived_from",
@@ -170,8 +190,11 @@ def bos_atoms(subject_wid, policy_hash, report):
     # offline" — which is simply false when it does not.
     verified = bool(report["ok"]) and report["errors"] == 0
     payload["evidence"] = ["bos:evidence:warrant:%s" % subject_wid[:16],
-                           "bos:evidence:verify-report:ok=%s,errors=%d"
-                           % (report["ok"], report["errors"])]
+                           # a real BOS id, not a sentence: the pattern is
+                           # closed and my first attempt embedded "ok=True"
+                           # and a comma, which the schema rejected
+                           "bos:evidence:verify-report:%s"
+                           % report_digest[:16]]
     risk = dict(common, id="bos:assessment:refund-agent-as-risk",
                 title="Automated refund approval is an unbounded liability",
                 created_by=["bos:actor:human:compliance"],
@@ -188,8 +211,10 @@ def bos_atoms(subject_wid, policy_hash, report):
                                   "so the exposure is now unbounded by any "
                                   "evidence at all.")),
                              confidence="medium" if verified else "high",
+                             likelihood="medium" if verified else "high",
                              magnitude="high",
-                             horizon="quarter"))
+                             horizon={"kind": "bounded",
+                                      "until": "2026-11-11T00:00:00Z"}))
     if not verified:
         # withheld, not weakened: its premise is false, and an assessment
         # whose stated reason has failed should not be re-worded into
@@ -208,35 +233,120 @@ def bos_atoms(subject_wid, policy_hash, report):
                                       "the same automation that creates the "
                                       "exposure also produces the evidence "
                                       "that bounds it.",
-                            confidence="medium", magnitude="medium",
-                            horizon="quarter"))
+                            confidence="medium", likelihood="medium",
+                            magnitude="medium",
+                            horizon={"kind": "bounded",
+                                      "until": "2026-11-11T00:00:00Z"}))
     return subject, [risk, opp], None
 
 
 def validate_atoms(atoms):
-    """Checked against BOS's own schema file — the mechanical subset only.
+    """Validated against BOS's FULL JSON Schema, or honestly skipped.
 
-    This is a required-key check against `schemas/bos-atom-v0.4.schema.json`,
-    not BOS's full validator, which judges a whole atom graph in place. The
-    limit is stated because a demo that says "validated" while checking
-    nothing is the failure this ecosystem exists to make hard.
+    Round 1 checked that the required keys were *present* and printed
+    "PASS ... per the BOS schema". Both objects were in fact rejected by that
+    schema — `states` was absent and `refund-agent` is outside a closed
+    `scope` enum. A presence check reported as schema validation is a false
+    green, and it is the exact failure this ecosystem exists to make hard.
     """
     path = os.path.join(BOS, "schemas", "bos-atom-v0.4.schema.json")
     if not os.path.isfile(path):
         return None, "BOS schema not found at %s" % path
+    try:
+        import jsonschema
+    except ImportError:
+        return None, ("jsonschema is not installed — NOT validated. "
+                      "`pip install jsonschema` to check.")
     with open(path) as fh:
         schema = json.load(fh)
-    env_req = schema.get("required", [])
-    defs = schema.get("$defs") or schema.get("definitions") or {}
-    pay_req = (defs.get("assessment_payload") or {}).get("required", [])
     for atom in atoms:
-        missing = [k for k in env_req if k not in atom]
-        missing += ["payload.%s" % k for k in pay_req
-                    if k not in atom.get("payload", {})]
-        if missing:
-            return False, "%s is missing %s" % (atom["id"], missing)
-    return True, "envelope + assessment payload required keys, per %s" % (
-        os.path.relpath(path, SIBLINGS))
+        try:
+            jsonschema.validate(atom, schema)
+        except jsonschema.ValidationError as exc:
+            return False, "%s: %s" % (atom["id"], str(exc).splitlines()[0])
+    return True, "full JSON Schema, %s" % os.path.relpath(path, SIBLINGS)
+
+
+def countervectors():
+    """The three findings that refuted round 1, kept as permanent controls.
+
+    Each was a way this demo said more than its evidence supported. A story
+    that once told a lie and no longer does is only trustworthy if something
+    keeps checking.
+    """
+    ok = True
+
+    def check(name, cond, detail=""):
+        nonlocal ok
+        print("%s  %s%s" % ("PASS" if cond else "FAIL", name,
+                            "" if cond else "  (%s)" % detail))
+        ok = ok and bool(cond)
+
+    tmp = tempfile.mkdtemp(prefix="refund-cv-")
+    try:
+        # 1. INTEGRITY IS NOT AUTHORIZATION. A claim far outside the policy
+        # ceiling still verifies, because nothing here reads the policy.
+        # The demo must reach "eligible for policy evaluation" and must NOT
+        # say the decision was allowed.
+        store, policy, _c, _p, acc = build_store(tmp, POLICY)
+        rep, _rc = warrant_report(store)
+        check("a $6400 claim under an $800 ceiling still verifies",
+              rep["ok"] and rep["errors"] == 0,
+              "integrity and authorization would be conflated if this failed")
+        # Checked over the demo's OUTPUT, not its source. The first version
+        # of this control grepped this file — and failed, because the string
+        # it was forbidding appears in the control that forbids it. A guard
+        # that reads itself is measuring the wrong thing.
+        demo = subprocess.run([sys.executable, os.path.abspath(__file__)],
+                              capture_output=True, text=True)
+        check("...and the demo's own output never claims authorization",
+              "eligible for policy evaluation" in demo.stdout
+              and "auto-approving" not in demo.stdout,
+              demo.stdout[-200:])
+
+        # 2. THE TWO VERIFIER RUNS MUST BE BOUND. A tamper landing between
+        # the printed report and SEV's own run once passed unnoticed.
+        out = os.path.join(tmp, "cv-sev")
+        blob = os.path.join(store, "blobs", policy)
+        with open(blob, "wb") as fh:
+            fh.write(POLICY.replace(b"800 USD", b"8000 USD"))
+        _proj, prc, receipt_digest, excluded = sev_projection(store, out)
+        sys.path.insert(0, os.path.join(SEV, "model"))
+        import snapshot_model as _sm
+        stale = _sm.sha256_hex(_sm.jcs(rep))
+        check("a tamper between the two runs breaks the digest binding",
+              receipt_digest != stale,
+              "SEV judged the same report the demo printed")
+        check("...and SEV excludes the affected sources",
+              (excluded or 0) > 0, "excluded=%s" % excluded)
+
+        # 3. THE BOS CHECK MUST BE REAL. Round 1 printed PASS from a
+        # required-key check over atoms the full schema rejects.
+        _s, atoms, _w = bos_atoms("a" * 64, "b" * 64,
+                                  {"ok": True, "errors": 0}, "c" * 64)
+        good, _d = validate_atoms(atoms)
+        check("generated atoms pass BOS's FULL schema", good is not False)
+        broken = json.loads(json.dumps(atoms[0]))
+        del broken["states"]
+        bad, _d2 = validate_atoms([broken])
+        check("...and an atom missing `states` is REJECTED", bad is False,
+              "a check that cannot fail is not a check")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return ok
+
+
+def sibling_versions():
+    """Local paths say nothing about which code ran."""
+    out = []
+    for name, path in (("warrant", WARRANT), ("sev", SEV), ("bos", BOS)):
+        p = subprocess.run(["git", "-C", path, "rev-parse", "--short", "HEAD"],
+                           capture_output=True, text=True)
+        dirty = subprocess.run(["git", "-C", path, "status", "--porcelain"],
+                               capture_output=True, text=True).stdout.strip()
+        out.append("%-8s %-52s %s%s" % (name, path, p.stdout.strip() or "?",
+                                        " (dirty)" if dirty else ""))
+    return out
 
 
 def main(argv):
@@ -244,6 +354,8 @@ def main(argv):
     ap.add_argument("--negative", action="store_true",
                     help="tamper with the pinned policy and re-run")
     ap.add_argument("--keep", action="store_true")
+    ap.add_argument("--countervectors", action="store_true",
+                    help="run the permanent controls and exit")
     args = ap.parse_args(argv[1:])
 
     for name, path in (("warrant", WARRANT), ("BOS", BOS)):
@@ -251,7 +363,10 @@ def main(argv):
             sys.exit("%s repository not found at %s\n"
                      "Set WARRANT_REPO / BOS_REPO, or check out the siblings."
                      % (name, path))
-    print("warrant: %s\nsev:     %s\nbos:     %s" % (WARRANT, SEV, BOS))
+    for line in sibling_versions():
+        print(line)
+    if args.countervectors:
+        return 0 if countervectors() else 1
 
     tmp = tempfile.mkdtemp(prefix="refund-slice-")
     try:
@@ -281,11 +396,18 @@ def main(argv):
             print("  %-4s %s  %s" % (f["level"], f["subject"][:12], f["message"][:70]))
 
         say("3. COMPOSITION — SEV projects that judgement, and says what it drops")
-        proj, prc = sev_projection(store)
+        sev_out = os.path.join(tmp, "sev-out")
+        proj, prc, receipt_digest, excluded = sev_projection(store, sev_out)
+        # the digest of the report we printed, computed the way the adapter
+        # computes the one it bound into the receipt
+        sys.path.insert(0, os.path.join(SEV, "model"))
+        import snapshot_model as _sm
+        shown_digest = _sm.sha256_hex(_sm.jcs(report))
+        excluded = 0 if excluded is None else excluded
         print(proj.strip()[:900])
 
         say("4. ATTRIBUTION — two actors, one decision, two legitimate lenses")
-        subject, atoms, withheld = bos_atoms(accepted, policy_hash, report)
+        subject, atoms, withheld = bos_atoms(accepted, policy_hash, report, shown_digest)
         ok, detail = validate_atoms(atoms)
         print("subject       %s" % subject)
         for a in atoms:
@@ -304,32 +426,44 @@ def main(argv):
                 json.dump(a, fh, indent=2, ensure_ascii=False, sort_keys=True)
         print("atoms written  %s (kept only with --keep)" % out)
 
-        say("5. ACTION — and the reason traces back to bytes")
-        healthy = report["ok"] and prc == 0
+        say("5. ACTION — bounded by what the evidence actually supports")
+        # `healthy` now means all three: the report we PRINTED is the report
+        # SEV judged (bound by digest), SEV excluded nothing, and Warrant
+        # said ok. Round 1 checked only the first and the last, and a tamper
+        # landing between the two verifier runs slipped through with
+        # "keep auto-approving" while SEV had excluded both records.
+        bound = receipt_digest == shown_digest
+        healthy = report["ok"] and prc == 0 and excluded == 0 and bound
+        print("report digest  shown=%s  in SEV receipt=%s  bound=%s"
+              % (shown_digest[:12], (receipt_digest or "-")[:12], bound))
+        print("sources excluded by SEV: %s" % excluded)
         if healthy:
-            print("DECISION: keep this agent auto-approving under refund-policy v1.")
-            print("REASON:   the acceptance %s verifies offline," % accepted[:16])
-            print("          it pins the policy as %s," % policy_hash[:16])
-            print("          and those bytes are still what the store holds.")
-            print("          The insurer's `risk` reading stands; the")
-            print("          `opportunity` reading is what makes it insurable.")
+            print("\nFINDING: the authorization trail is INTACT.")
+            print("  The decision %s names policy %s," % (accepted[:16], policy_hash[:16]))
+            print("  those bytes are still what the store holds, and the")
+            print("  report SEV composed is the one printed above.")
+            print("\nACTION:  eligible for policy evaluation.")
+            print("  NOT 'approved'. Nothing here reads the policy prose or")
+            print("  checks the claim against it — a $6400 claim under an")
+            print("  $800 ceiling reaches this same line, and the permanent")
+            print("  countervector below proves it. Integrity is not")
+            print("  authorization, and this slice only does integrity.")
         else:
-            print("DECISION: STOP auto-approval; route refunds to a human.")
-            print("REASON:   the evidence no longer supports the authorization.")
-            print("          Warrant reports ok=%s, errors=%d." % (report["ok"], report["errors"]))
-            print("          SEV %s." % ("refused to project"
-                                         if prc else "projected with exclusions"))
-            print("          Nobody edited the DECISION — someone edited what")
-            print("          it was decided under, and that is visible.")
+            print("\nFINDING: the authorization trail is BROKEN.")
+            print("  Warrant ok=%s errors=%d; SEV excluded %d source(s); "
+                  "report bound=%s" % (report["ok"], report["errors"],
+                                       excluded, bound))
+            print("\nACTION:  stop auto-approval; route to a human.")
+            print("  Nobody edited the DECISION — someone edited what it was")
+            print("  decided under, or the two verifications disagree.")
         if args.negative:
-            # A negative control that cannot fail is not a control. If the
-            # tamper stops flipping the verdict, this must go red — otherwise
-            # the demo would keep printing a reassuring story over evidence
-            # that no longer holds.
-            flipped = (not report["ok"]) and report["errors"] > 0
-            print("\nnegative control: verdict flipped = %s" % flipped)
-            if not flipped:
-                print("FAILED: the tamper did not change the judgement.")
+            # The control asserts its own outcome. Without this, "tamper not
+            # detected" and "tamper detected" would both be readable from the
+            # exit code only by knowing which mode you asked for — and a
+            # regression would look like a clean run.
+            print("\nnegative control: the tamper WAS detected = %s" % (not healthy))
+            if healthy:
+                print("FAILED: the edit did not change the outcome.")
                 return 1
             return 0
         return 0 if healthy else 1
