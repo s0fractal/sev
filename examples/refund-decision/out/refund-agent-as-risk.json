@@ -1,0 +1,42 @@
+{
+  "created_at": "2026-08-11T00:00:00Z",
+  "created_by": [
+    "bos:actor:human:compliance"
+  ],
+  "disclosure": {
+    "classification": "public",
+    "payload_mode": "embedded",
+    "retention": "indefinite"
+  },
+  "id": "bos:assessment:refund-agent-as-risk",
+  "kind": "assessment",
+  "payload": {
+    "assessed_by": [
+      "bos:actor:human:compliance"
+    ],
+    "confidence": "medium",
+    "context_cut": "bos:context_cut:refund-slice-2026-08-11",
+    "evidence": [
+      "bos:evidence:warrant:649298638a9898b8"
+    ],
+    "horizon": "quarter",
+    "lens": "risk",
+    "magnitude": "high",
+    "objective": "bos:goal:defensible-agent-autonomy",
+    "stakeholder": "bos:actor:human:insurer",
+    "statement": "An agent approving refunds without human review can bind the company to costs it never budgeted; the exposure is real whether or not the record verifies.",
+    "subject": "bos:asset:decision:warrant-649298638a9898b8"
+  },
+  "relations": [
+    {
+      "object": "bos:evidence:warrant:649298638a9898b8",
+      "predicate": "derived_from"
+    }
+  ],
+  "schema": "bos.atom@v0.4",
+  "scope": [
+    "ecosystem",
+    "refund-agent"
+  ],
+  "title": "Automated refund approval is an unbounded liability"
+}
