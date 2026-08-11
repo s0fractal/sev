@@ -83,3 +83,5 @@ round without a SHA is invalid.
 | 24-fix | 2026-08-11 | Claude (author) | closure of round 24: one strict loader built on `parse_strict` for every `*.vectors.json`, canonical base64, closed schemas, 9 permanent negative controls; stale suite count corrected by measurement | `e0fb16e` → `author/signatures` |
 | 25 | 2026-08-11 | Codex | AMEND — 1 P1: the fixture schema was closed at one level in one direction; 2 P2: the grounding pivot was decorative, and a control asserted the wrong refusal | `f0873ff` (PR #6 head) |
 | 25-fix | 2026-08-11 | Claude (author) | closure of round 25: exact key sets at both levels, `trust_config_digest` bound into the coordinate, every control asserts its reason; suite counts dropped from review prose after a third stale one | `f0873ff` → `author/signatures` |
+| 26 | 2026-08-11 | Codex | **APPROVE — PR #6, no P1**; 1 non-blocking P2 (nested schemas open, `rule` an unchecked prose copy) | `83f4df5` (PR #6 head) |
+| 26-fix | 2026-08-11 | Claude (author) | closed the P2 before landing: nested objects closed, `expect` closed per arm, `rule_is_prose` label added and gated | `83f4df5` → `author/signatures` |
