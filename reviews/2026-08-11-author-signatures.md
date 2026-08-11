@@ -297,3 +297,92 @@ code-points instead of octets.
 unchanged and now *more* tightly constrained: every binding is `unverified`
 at base grade, which is exactly what the new matrix permits — an adapter
 claiming `bound` there would now be refused.
+
+---
+
+# Round 19 closure — Codex, target `43e77dd` (PR #6), verdict AMEND
+
+**3 P1 + 1 P2.** All reproduced before any change. The amendment principle
+was approved; this edition was not ratified, and the reasons were exact.
+
+## P1-1 — the trust matrix was wrongly scoped to `valid: true`
+
+Reproduced: an **invalid co-signature** claiming `binding: "unbound"` at
+base grade with `trust_config_digest: null`, on a record whose actor
+signature is valid — so the record projects, and the verification graph
+asserts `wrt:binding "unbound"` and `wrt:claimedSigner "co@example"`.
+
+This is the question round 18 forwarded, answered against the narrower
+reading, and the reasoning is what makes it stick: **without key state
+Warrant does not know a key is *unbound* either.** It knows only
+`unverified`, whatever the cryptography says about the signature itself.
+Validity and binding are independent facts, and I had let one gate the
+other.
+
+**Disposition.** The base clause is lifted out of the validity check and
+now covers every signature. The settlement clause stays scoped to
+`valid: true` — a verifier may legitimately compute no binding for a
+signature that failed verification — and both the rule and its remaining
+open edge are written into the contract rather than left in code comments.
+
+## P1-2 — there was nothing to ratify
+
+Correct, and the sharpest of the four. The executable model enforced
+`BINDING_WITHOUT_TRUST` and `UNVERIFIED_UNDER_TRUST`; `README.md` called an
+amendment "proposed"; and the document that *defines* this core contained
+no matrix, no codes, no scope. A README status line is not a ratifiable
+contract, and a second implementation reading the proposal would have had
+no idea the rules existed.
+
+**Disposition.** `proposals/WARRANT-VERIFICATION-RECEIPT.md` gains
+**Amendment A-1**, marked `PROPOSED — NOT RATIFIED`, carrying the defect it
+closes, the full permitted-binding matrix with both finding codes and their
+locators, the exact scope of each clause, the open edge on the settlement
+side, and its relationship to the existing `BINDING_WITHOUT_VALIDITY` rule.
+It also states what conformance means meanwhile: a receipt conforming to
+`1fb82d6` alone is **not** non-conformant until ratification moves the
+frozen SHA.
+
+## P1-3 and P2 — the normative documents lagged the code
+
+Both confirmed: the profile still specified the actor encoding as "empty
+safe set" (the phrasing round 18 replaced *in code* precisely because it is
+not a specification), and still carried the `L-NOPROMOTE` wording that
+denies a `prov:Agent` the bound path now emits. `profile_revision` in every
+manifest binds the graph to that text, so the graphs were pointing at a
+document that described a different projector.
+
+Both replaced with the exact rules.
+
+## The pattern, and a structural answer to it
+
+Three rounds running, the same shape: **closed in Python and in
+Python-side vectors, left standing in the language-neutral contract.** The
+document is what a second implementation reads, so a fix that lands only in
+code has not landed.
+
+Prose synchronisation cannot be vectored, but the *rule* can be moved out of
+prose entirely. `conformance/actor-iri.vectors.json` now carries the actor
+IRI contract as **data**: eight cases covering the unreserved set,
+JavaScript's extra safe set, delimiters, uppercase hex, octets-vs-code-
+points, a realistic Cyrillic id, the empty id, and an already-percent-
+looking id that must be re-encoded. Inputs are base64, because a JSON string
+cannot carry the boundary bytes where implementations actually diverge.
+`replay.py` runs them. An implementation that reproduces every `iri` from
+its `actor` agrees with SEV without reading any Python.
+
+## Mutation results
+
+5/5 fail: base rule narrowed back to `valid: true`, base rule removed,
+settlement rule widened past `valid: true`, lowercase hex, unreserved set
+widened to JavaScript's.
+
+## State
+
+108 model + 320 projector + **19 fixtures** (11 parse-strict + 8 actor-iri)
++ 29 adapter, all green. Live store unchanged: 81 sources, 1177 quads,
+0 errors / 16 warnings.
+
+**Not done:** no merge, no freeze, and the frozen SHA stays `1fb82d6` —
+A-1 is ratified only by a clean exact-SHA gate on this text, which is the
+reviewer's act, not mine.

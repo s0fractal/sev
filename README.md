@@ -42,7 +42,7 @@ Sealed Ecosystem Bundle  (ecosystem.snapshot@v0)
 ```bash
 python3 model/snapshot_model.py   # exit status is the verdict
 python3 model/sev_projector.py    # end-to-end projection, cross-process determinism
-python3 conformance/replay.py     # language-neutral fixture replay
+python3 conformance/replay.py     # language-neutral fixture replay (parse-strict + actor-iri)
 python3 model/warrant_adapter.py --selftest        # adapter vectors
 python3 model/warrant_adapter.py ~/path/.warrants  # project a real store
 ```
@@ -72,7 +72,7 @@ own clean round:
 | Artifact | Scope | Status |
 |---|---|---|
 | `ecosystem.snapshot@v0` **byte core** | logical-path and prefix rules, subroot descriptor + domain-separated digest, snapshot object with its normative array orders and self-hash, `parse_strict`'s complete refusal set | **FROZEN** at `7935400` — clean §7 gate, Kimi round 7 re-gate, zero P1 |
-| `warrant.verification-receipt@v0` core | receipt core invariants, envelope/body binding, counts, source union, and acknowledged invalid evidence | **FROZEN** at `1fb82d6` — exact-SHA gate of `4e09d7d`, merged unchanged through PR #2; zero P1. **One amendment is proposed and NOT ratified** (round 18 P1): a valid signature's `binding` must match its trust basis — `unverified` at base grade, `bound`/`unbound` only under a pinned trust config. It closes a state no verifier can produce but the core accepted, and from which the projector minted a `prov:Agent`. It is a change to a frozen invariant and needs an explicit ratification decision, not a merge |
+| `warrant.verification-receipt@v0` core | receipt core invariants, envelope/body binding, counts, source union, and acknowledged invalid evidence | **FROZEN** at `1fb82d6` — exact-SHA gate of `4e09d7d`, merged unchanged through PR #2; zero P1. **Amendment A-1 is proposed and NOT ratified** — its normative text lives in [`proposals/WARRANT-VERIFICATION-RECEIPT.md`](proposals/WARRANT-VERIFICATION-RECEIPT.md), not in this table, because a status line is not a ratifiable contract. It requires a signature's `binding` to match its trust basis. Ratification is an explicit decision on that text, after a clean exact-SHA gate; only then does the frozen SHA move |
 | MVP projector | what `model/sev_projector.py` actually emits, per `mvp_predicates` in the shapes file | **not frozen** |
 | Full `sev@v0` target profile | every class and predicate in `conformance/prov-shapes.json`, including the OAIP/BOS quadrants | **not frozen**, and expected to move longest |
 

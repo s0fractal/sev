@@ -932,11 +932,23 @@ def validate_receipt_core(core, descriptor=None, cas=None, view=None) -> list:
             # state no verifier can produce — and the projector then minted a
             # `prov:Agent` from it. **This is an amendment to a FROZEN
             # contract** (round 18 P1); see the freeze table in README.
-            if s["valid"] is True:
-                if grade == "base" and s["binding"] != "unverified":
-                    _f(f, "BINDING_WITHOUT_TRUST", sat)
-                elif grade == "settlement" and s["binding"] == "unverified":
-                    _f(f, "UNVERIFIED_UNDER_TRUST", sat)
+            # The base rule is NOT scoped to valid signatures. Binding is a
+            # statement about key→actor association, and without key state
+            # Warrant does not know a key is *unbound* either — it knows only
+            # `unverified`, whatever the cryptography says. Scoping this to
+            # `valid: true` left an invalid co-signature free to claim
+            # `unbound` at base grade, and a record carrying another valid
+            # actor signature then projected that ungrounded binding and its
+            # `claimedSigner` (round 19 P1 — the open question round 18
+            # forwarded, answered against the narrower reading).
+            if grade == "base" and s["binding"] != "unverified":
+                _f(f, "BINDING_WITHOUT_TRUST", sat)
+            # The settlement side stays scoped: under a pinned trust config a
+            # valid signature must resolve to bound/unbound, while an invalid
+            # one may legitimately have had no binding computed at all.
+            elif (grade == "settlement" and s["valid"] is True
+                  and s["binding"] == "unverified"):
+                _f(f, "UNVERIFIED_UNDER_TRUST", sat)
         _ordered(f, good_sigs, lambda s: (s["sig_digest"], s["multiplicity"]),
                  "SIGNATURES_NOT_SORTED", at + "/signatures")
         # One-way internal-consistency rule, no cryptography involved: if the

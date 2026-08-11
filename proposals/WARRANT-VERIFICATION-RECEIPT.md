@@ -480,6 +480,64 @@ This freeze covers the receipt core only. It does not freeze the MVP
 projector, the full `sev@v0` target profile, an adapter to live Warrant
 verifier output, or adoption of this upstream proposal by Warrant.
 
+## Amendment A-1 — binding requires a trust basis — **PROPOSED, NOT RATIFIED**
+
+> **Status: PROPOSED — NOT RATIFIED.** This amends the frozen core above. It
+> is implemented in `model/snapshot_model.py` and vectored, but the frozen
+> revision remains `1fb82d6` until a clean exact-SHA gate ratifies this text
+> and a new SHA is recorded. A second implementation reading this document
+> must treat A-1 as normative **only** once that happens; until then, it
+> documents a proposal, and a receipt conforming to `1fb82d6` alone is not
+> non-conformant.
+
+### The defect
+
+`binding` states *what is known about the association between a signing key
+and an actor*. Warrant derives that from **key state**, which exists only
+under a pinned trust configuration. The frozen core enforced
+`trust_config_digest == null iff grade == "base"` but placed no constraint
+on `binding`, so a receipt could report
+
+```json
+{ "grade": "base", "trust_config_digest": null,
+  "signatures": [{ "valid": true, "binding": "bound", ... }] }
+```
+
+— a state **no verifier can produce**. A projector consuming it minted a
+`prov:Agent` and an attribution from an assertion nothing licensed.
+
+### The invariant
+
+For every entry of `sources[].signatures[]`:
+
+| `grade` / `trust_config_digest` | permitted `binding` | on violation |
+|---|---|---|
+| `base` / `null` | `unverified` — **for every signature, valid or not** | `BINDING_WITHOUT_TRUST` at `/core/sources/<i>/signatures/<j>` |
+| `settlement` / hex64 | `bound` or `unbound` when `valid: true` | `UNVERIFIED_UNDER_TRUST` at the same locator |
+| `settlement` / hex64 | unconstrained when `valid: false` | — |
+
+Both findings are `ERR`.
+
+### Scope, stated exactly
+
+The base clause is **not** conditioned on `valid`: without key state Warrant
+does not know a key is *unbound* either, only that it is *unverified*, and
+the narrower reading left an invalid co-signature free to claim `unbound` at
+base grade on a record that otherwise projects.
+
+The settlement clause **is** conditioned on `valid: true`, because a
+verifier may legitimately not compute a binding for a signature that failed
+cryptographic verification. If Warrant's real surface turns out to compute
+one regardless, this clause widens the same way the base clause did — that
+is an open question, not a settled reading.
+
+### Relationship to the existing rule
+
+A-1 sits beside `BINDING_WITHOUT_VALIDITY` (`valid: false` with
+`binding: "bound"`), which the frozen core already enforced. The two are
+independent: one forbids a binding stronger than the validity supports, the
+other forbids any binding without a basis to compute it.
+
 ## Open questions
 
 1. `universe` no longer appears in `core` (it lives in the subroot
