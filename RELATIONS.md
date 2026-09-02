@@ -1,24 +1,26 @@
 # Relations (local notes)
 
 Authoritative map: [protocol-ecosystem](https://github.com/s0fractal/protocol-ecosystem).
-This file only answers the four standard questions for THIS repo. All
-statuses use the map's closed vocabulary; everything below is `research`
-unless stated.
+This file records the terminal relation state for an `ABANDONED` trajectory.
+All live relations are removed from the active ecosystem map; the rows below
+are `historical` and do not authorize new dependencies.
 
-**What is this repository?** Research drafts and an executable model for
+**What was this repository?** Research drafts and an executable model for
 sealed ecosystem snapshots, protocol-scoped validation receipts, and
-loss-explicit evidence projections. Not a protocol authority.
+loss-explicit evidence projections. It was never a protocol authority and was
+never adopted.
 
-**Which surfaces of other repos does it consume?**
+**Which surfaces of other repos did it consume or anticipate?**
 
 | To | Consumed surface | Status | Evidence / gate |
 |---|---|---|---|
-| warrant | SPEC v0.4 semantics *by reference* (JCS §4, grades §6–§7, jurisdictions §9, binding §5.1); no code, no pin | `research` | citations in `spec/` and `proposals/`; the receipt is an unadopted upstream proposal |
-| sigma-glyph | Book I anchor as the `ski@v1` semantics digest in `execution_policy` | `research` | field `semantics_digest`; model vectors |
-| oaip | future `oaip.validation-receipt@v0` (owned by OAIP, does not exist) | `intended` | none — L-UNJUDGED until it exists |
-| BOS | future `bos.validation-receipt@v0` (owned by BOS, does not exist); observer-relative projection rules from BOS-0001 | `intended` | none — L-UNJUDGED until it exists |
-| protocol-ecosystem | the relationship map, by URL only | `research` | no pin, no submodule (map rule 1–2) |
+| warrant | SPEC v0.4 semantics by reference; the SEV-originated receipt direction | `historical` | Warrant closed WRT-003 at `25bd44c829cb015a836e08642022412c568de16a` in favour of a Warrant-owned report; no SEV receipt contract was adopted |
+| sigma-glyph | Book I anchor as the `ski@v1` semantics digest in `execution_policy` | `historical` | field `semantics_digest`; SEV-local model vectors only |
+| oaip | prospective `oaip.validation-receipt@v0` | `historical` | it did not exist; no gate or consumer was created |
+| BOS | prospective `bos.validation-receipt@v0`; observer-relative projection rules from BOS-0001 | `historical` | the receipt did not exist; no gate or consumer was created |
+| protocol-ecosystem | the relationship map, by URL only | `historical` | the map now carries the retirement status; no pin or submodule |
 
-**Where is any of this checked?** `model/snapshot_model.py` (self-vectors);
-`reviews/` (adversarial rounds against exact SHAs). Nothing is checked in
-any other repository's CI, by design.
+**Where was any of this checked?** `model/snapshot_model.py` (self-vectors),
+the other local harnesses, and `reviews/` (model review rounds against exact
+SHAs). Those checks remain reproducible evidence about preserved bytes; a
+green run does not reactivate SEV or create cross-repository validation credit.

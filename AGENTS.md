@@ -3,10 +3,19 @@
 Inherited from the sigma-glyph / warrant house culture; this repo exists to
 practice the same discipline on its own artifacts.
 
+0. **This trajectory is `ABANDONED`.** The owner ended active SEV development
+   on 2026-09-02; see `RETIREMENT.md`. Treat the repository as historical
+   evidence, not as an active protocol or a source of current defaults. Work
+   is limited to preservation, security, correction of false historical
+   claims, and review of the retirement record. New features, proposals, or
+   re-use as a current dependency require an explicit re-adoption decision;
+   finding old bytes in Git is not re-adoption.
+
 1. **Never commit to `master`.** Work on a branch; `master` advances through
    review. Pushing, releasing, or renaming are outward-facing acts that need
    explicit human authorization.
-2. **Status honesty.** This repository is research, not adopted. Nothing in
+2. **Status honesty.** This repository is historical research, abandoned and
+   never adopted. Nothing in
    a commit message, README, or review response may claim adoption,
    independent approval, or cross-implementation parity that does not exist.
    "The model passes its N vectors" is the strongest claim available, and it
