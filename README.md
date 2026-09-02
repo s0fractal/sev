@@ -1,7 +1,24 @@
 # SEV — Sealed Evidence View
 
-**Status: research, not adopted.** Nothing here is a live contract; no
-protocol has accepted anything from this repository.
+> **Trajectory status: `ABANDONED` (owner decision, 2026-09-02).** SEV is no
+> longer an active member of the protocol ecosystem and nothing here is a live
+> contract. This is not a refutation and not a claim that another repository
+> implements SEV. The frozen byte core, the loss-explicit projection work, and
+> the failed refund slice remain available as historical evidence. See
+> [`RETIREMENT.md`](RETIREMENT.md) before citing or reusing them.
+
+Active work continues in
+[Σ-GLYPH](https://github.com/s0fractal/sigma-glyph) for deterministic addressed
+evaluation, [Warrant](https://github.com/s0fractal/warrant) for authority and
+replayable decisions, and [Manifesto](https://github.com/s0fractal/manifesto)
+for semantic hygiene, credit boundaries, and controlled forgetting. These are
+directions for new work, not implementations of or drop-in replacements for
+SEV. [OAIP](https://github.com/s0fractal/oaip) remains the separate observation
+protocol where observed action is the subject.
+
+The text below describes the terminal research state at
+`author/vertical-slice-refund@4453bf3`; it is preserved rather than rewritten
+as a current design.
 
 Snapshot-bound, receipt-aware and loss-explicit evidence views across
 independent protocols. The core object is not the RDF graph — it is the
@@ -102,9 +119,9 @@ per-protocol judgements; it never owns their semantics.
 
 ## Relations
 
-How this repository relates to its siblings — which links are gated
-contracts, which are proposals, and which do not exist — is indexed in the
-[ecosystem relationship map](https://github.com/s0fractal/protocol-ecosystem).
+How this repository historically related to its siblings — which links were
+gated contracts, which were proposals, and which never existed — is indexed in
+the [ecosystem relationship map](https://github.com/s0fractal/protocol-ecosystem).
 Local notes: [`RELATIONS.md`](RELATIONS.md).
 
 ## License
